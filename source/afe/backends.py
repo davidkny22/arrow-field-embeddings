@@ -54,6 +54,92 @@ class PaCMAPBackend(SpatialBackend):
         return self._reducer.transform(X_new).astype(np.float32)
 
 
+class DREAMSBackend(SpatialBackend):
+    """DREAMS-based spatial layout.
+
+    DREAMS (Dimensionality Reduction Enhanced Across Multiple Scales)
+    regularizes t-SNE toward PCA positions, balancing local and global
+    structure preservation.
+
+    Requires the DREAMS fork of openTSNE:
+        git clone --branch tp --single-branch https://github.com/berenslab/DREAMS.git
+        cd DREAMS && python setup.py install
+
+    Parameters
+    ----------
+    reg_lambda : float, default=0.15
+        Regularization strength. Higher = more global (PCA-like),
+        lower = more local (t-SNE-like).
+    perplexity : float, default=30.0
+        t-SNE perplexity parameter.
+    n_iter : int, default=750
+        Number of optimization iterations.
+    random_state : int or None, default=None
+        Random seed.
+    verbose : bool, default=False
+        Print progress.
+    """
+
+    def __init__(
+        self,
+        reg_lambda=0.15,
+        perplexity=30.0,
+        n_iter=750,
+        random_state=None,
+        verbose=False,
+        **kwargs,
+    ):
+        self.reg_lambda = reg_lambda
+        self.perplexity = perplexity
+        self.n_iter = n_iter
+        self.random_state = random_state
+        self.verbose = verbose
+        self.extra_kwargs = kwargs
+        self._embedding = None
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        try:
+            from openTSNE import TSNE
+        except ImportError:
+            raise ImportError(
+                "DREAMS requires the openTSNE fork from berenslab. "
+                "Install with:\n"
+                "  git clone --branch tp --single-branch "
+                "https://github.com/berenslab/DREAMS.git\n"
+                "  cd DREAMS && python setup.py install"
+            )
+
+        from sklearn.decomposition import PCA
+
+        # Compute PCA reference embedding (3D)
+        pca = PCA(n_components=3, random_state=self.random_state)
+        pca_embedding = pca.fit_transform(X).astype(np.float64)
+
+        # Scale reference embedding to small initial scale
+        pca_ref = pca_embedding / pca_embedding[:, 0].std() * 0.0001
+
+        embedder = TSNE(
+            n_components=3,
+            perplexity=self.perplexity,
+            n_iter=self.n_iter,
+            initialization=pca_ref,
+            regularization=True,
+            reg_lambda=self.reg_lambda,
+            reg_embedding=pca_ref,
+            random_state=self.random_state or 42,
+            verbose=self.verbose,
+            **self.extra_kwargs,
+        )
+
+        self._embedding = np.asarray(embedder.fit(X), dtype=np.float32)
+        return self._embedding.copy()
+
+    def transform(self, X_new: np.ndarray) -> np.ndarray:
+        raise NotImplementedError(
+            "DREAMSBackend does not currently support transform on new data."
+        )
+
+
 class ManualBackend(SpatialBackend):
     """Use a pre-computed (n, 3) spatial embedding as the backend."""
 
@@ -101,9 +187,8 @@ def get_backend(
                 random_state=random_state, verbose=verbose, **backend_kwargs
             )
         elif backend == "dreams":
-            raise NotImplementedError(
-                "DREAMS backend is not yet implemented. "
-                "Use 'pacmap' or provide a pre-computed embedding."
+            return DREAMSBackend(
+                random_state=random_state, verbose=verbose, **backend_kwargs
             )
         elif backend == "manual":
             raise ValueError(
