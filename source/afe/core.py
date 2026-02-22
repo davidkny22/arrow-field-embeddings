@@ -114,7 +114,9 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
             correlation_threshold=self.correlation_threshold,
             verbose=self.verbose,
         )
-        self._gap_report = self._gap_analyzer.analyze(X, self._spatial)
+        self._gap_report = self._gap_analyzer.analyze(
+            X, self._spatial, n_arrows=self.n_arrows
+        )
 
         # Step 3: Arrow encoding
         if self.verbose:
