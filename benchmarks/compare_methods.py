@@ -5,6 +5,8 @@ what spatial position alone provides.
 
 Usage:
     python benchmarks/compare_methods.py [--datasets ...] [--n-arrows 3] [--n-seeds 3]
+    python benchmarks/compare_methods.py --category scrna --n-arrows 5,25,50
+    python benchmarks/compare_methods.py --list-datasets
 """
 
 import argparse
@@ -17,7 +19,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from afe import ArrowFieldEmbedding
-from benchmarks.datasets import DATASETS, LABELED_DATASETS
+from benchmarks.datasets import (
+    DATASETS, LABELED_DATASETS,
+    DATASETS_GENERAL, DATASETS_SCRNA, DATASET_CATEGORIES,
+)
 from benchmarks.metrics import (
     knn_recall,
     spearman_distance_correlation,
@@ -124,9 +129,9 @@ def run_afe(X, labels, encoding_mode, n_arrows, seed):
     return metrics
 
 
-def compare_on_dataset(dataset_name, n_arrows=3, n_seeds=3,
+def compare_on_dataset(dataset_name, arrow_counts=(3,), n_seeds=3,
                        modes=("direct", "pca", "adaptive")):
-    """Run full comparison on one dataset."""
+    """Run full comparison on one dataset across multiple arrow counts."""
     loader = DATASETS[dataset_name]
     X, y = loader()
     labels = y if dataset_name in LABELED_DATASETS else None
@@ -138,7 +143,7 @@ def compare_on_dataset(dataset_name, n_arrows=3, n_seeds=3,
 
     all_results = []
 
-    # Baseline: PaCMAP 3D
+    # Baseline: PaCMAP 3D (run once, shared across arrow counts)
     print(f"\n  PaCMAP 3D (baseline)")
     baseline_metrics = []
     for seed in range(n_seeds):
@@ -157,34 +162,34 @@ def compare_on_dataset(dataset_name, n_arrows=3, n_seeds=3,
           f"Triplet: {mean_bl['random_triplet_acc']:.3f}  "
           f"Recon MSE: {mean_bl['reconstruction_mse']:.4f}")
 
-    # AFE modes
-    for mode in modes:
-        print(f"\n  AFE ({mode}, {n_arrows} arrows)")
-        mode_metrics = []
-        for seed in range(n_seeds):
-            m = run_afe(X, labels, mode, n_arrows, seed)
-            m["dataset"] = dataset_name
-            all_results.append(m)
-            mode_metrics.append(m)
+    # AFE modes x arrow counts
+    for n_arrows in arrow_counts:
+        for mode in modes:
+            print(f"\n  AFE ({mode}, {n_arrows} arrows)")
+            mode_metrics = []
+            for seed in range(n_seeds):
+                m = run_afe(X, labels, mode, n_arrows, seed)
+                m["dataset"] = dataset_name
+                all_results.append(m)
+                mode_metrics.append(m)
 
-        mean_m = {
-            k: np.mean([r[k] for r in mode_metrics if k in r])
-            for k in ["knn_recall_k10", "arrow_knn_recall_k10", "spearman_dist_corr",
-                       "random_triplet_acc", "reconstruction_mse", "arrow_info_gain",
-                       "arrow_consistency"]
-        }
-        # Compute improvement
-        knn_gain = mean_m["arrow_knn_recall_k10"] - mean_bl["knn_recall_k10"]
-        recon_gain = mean_bl["reconstruction_mse"] - mean_m["reconstruction_mse"]
+            mean_m = {
+                k: np.mean([r[k] for r in mode_metrics if k in r])
+                for k in ["knn_recall_k10", "arrow_knn_recall_k10", "spearman_dist_corr",
+                           "random_triplet_acc", "reconstruction_mse", "arrow_info_gain",
+                           "arrow_consistency"]
+            }
+            knn_gain = mean_m["arrow_knn_recall_k10"] - mean_bl["knn_recall_k10"]
+            recon_gain = mean_bl["reconstruction_mse"] - mean_m["reconstruction_mse"]
 
-        print(f"    kNN@10 (spatial):  {mean_m['knn_recall_k10']:.3f}  "
-              f"(same backend)")
-        print(f"    kNN@10 (+ arrows): {mean_m['arrow_knn_recall_k10']:.3f}  "
-              f"({'+'if knn_gain>=0 else ''}{knn_gain:.3f} vs baseline)")
-        print(f"    Recon MSE:         {mean_m['reconstruction_mse']:.4f}  "
-              f"({'+'if recon_gain>=0 else ''}{recon_gain:.4f} improvement)")
-        print(f"    Arrow info gain:   {mean_m['arrow_info_gain']:.4f}")
-        print(f"    Arrow consistency: {mean_m['arrow_consistency']:.3f}")
+            print(f"    kNN@10 (spatial):  {mean_m['knn_recall_k10']:.3f}  "
+                  f"(same backend)")
+            print(f"    kNN@10 (+ arrows): {mean_m['arrow_knn_recall_k10']:.3f}  "
+                  f"({'+'if knn_gain>=0 else ''}{knn_gain:.3f} vs baseline)")
+            print(f"    Recon MSE:         {mean_m['reconstruction_mse']:.4f}  "
+                  f"({'+'if recon_gain>=0 else ''}{recon_gain:.4f} improvement)")
+            print(f"    Arrow info gain:   {mean_m['arrow_info_gain']:.4f}")
+            print(f"    Arrow consistency: {mean_m['arrow_consistency']:.3f}")
 
     return all_results
 
@@ -224,26 +229,58 @@ def print_summary(all_results):
             print(line)
 
 
+def list_datasets():
+    """Print all available datasets grouped by category."""
+    print("\nAvailable datasets:\n")
+    for cat_name, cat_dict in DATASET_CATEGORIES.items():
+        print(f"  [{cat_name}] ({len(cat_dict)} datasets)")
+        for name in sorted(cat_dict.keys()):
+            labeled = " (labeled)" if name in LABELED_DATASETS else ""
+            print(f"    {name}{labeled}")
+        print()
+    print(f"Total: {len(DATASETS)} datasets")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AFE vs PaCMAP comparison")
-    parser.add_argument("--datasets", type=str,
-                        default="swiss_roll,hierarchical_gaussians",
+    parser.add_argument("--datasets", type=str, default=None,
                         help="Comma-separated dataset names")
-    parser.add_argument("--n-arrows", type=int, default=3)
+    parser.add_argument("--category", type=str, default=None,
+                        choices=["general", "scrna", "all"],
+                        help="Run all datasets in a category")
+    parser.add_argument("--n-arrows", type=str, default="3",
+                        help="Comma-separated arrow counts (e.g., 5,25,50)")
     parser.add_argument("--n-seeds", type=int, default=3)
     parser.add_argument("--modes", type=str, default="direct,pca,adaptive")
     parser.add_argument("--output", type=str, default="comparison_results.json")
+    parser.add_argument("--list-datasets", action="store_true",
+                        help="Print available datasets and exit")
     args = parser.parse_args()
 
-    datasets = [d.strip() for d in args.datasets.split(",")]
+    if args.list_datasets:
+        list_datasets()
+        return
+
+    # Resolve dataset list
+    if args.category:
+        if args.category == "all":
+            datasets = list(DATASETS.keys())
+        else:
+            datasets = list(DATASET_CATEGORIES[args.category].keys())
+    elif args.datasets:
+        datasets = [d.strip() for d in args.datasets.split(",")]
+    else:
+        datasets = ["swiss_roll", "hierarchical_gaussians"]
+
     modes = tuple(m.strip() for m in args.modes.split(","))
+    arrow_counts = tuple(int(x.strip()) for x in args.n_arrows.split(","))
 
     all_results = []
     for ds in datasets:
         if ds not in DATASETS:
             print(f"Warning: unknown dataset '{ds}', skipping")
             continue
-        results = compare_on_dataset(ds, n_arrows=args.n_arrows,
+        results = compare_on_dataset(ds, arrow_counts=arrow_counts,
                                      n_seeds=args.n_seeds, modes=modes)
         all_results.extend(results)
 
