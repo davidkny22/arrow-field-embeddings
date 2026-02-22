@@ -124,7 +124,7 @@ canvas{display:block}
   <div id="controls">
     WASD move | QE up/down | Mouse look | Scroll speed | Shift boost<br>
     Left/Right cycle arrows | PgUp/Dn jump 10 | 1-0 toggle | backtick hide all | T all<br>
-    O orbit/fly | B background | G grid box<br>
+    O orbit/fly | B background | G grid box | +/- density | Backspace reset<br>
     Orbit: drag rotate, right-drag pan, scroll zoom
   </div>
   <div id="legend"></div>
@@ -176,31 +176,10 @@ var range=Math.max(mxX-mnX,mxY-mnY,mxZ-mnZ)||1;
 camera.position.set(cx, cy, cz + range*1.3);
 camera.lookAt(cx, cy, cz);
 
-// 3D sphere points (instanced)
-var sphereR = range * 0.0025 * DATA.pointSize / 10.0 * 0.5;
-var sphereGeo = new THREE.SphereGeometry(1, 16, 12);
-var sphereMat = new THREE.MeshPhongMaterial({
-  shininess: 60,
-  transparent: true,
-  opacity: 0.92
-});
-var points = new THREE.InstancedMesh(sphereGeo, sphereMat, DATA.n);
-var ptDummy = new THREE.Object3D();
-var ptColor = new THREE.Color();
-for (var i = 0; i < DATA.n; i++) {
-  ptDummy.position.set(DATA.spatial[i*3], DATA.spatial[i*3+1], DATA.spatial[i*3+2]);
-  ptDummy.scale.set(sphereR, sphereR, sphereR);
-  ptDummy.updateMatrix();
-  points.setMatrixAt(i, ptDummy.matrix);
-  var c = LABEL_PALETTE[DATA.labels[i] % LABEL_PALETTE.length];
-  ptColor.setRGB(c[0], c[1], c[2]);
-  points.setColorAt(i, ptColor);
-}
-points.instanceMatrix.needsUpdate = true;
-points.instanceColor.needsUpdate = true;
-scene.add(points);
+// Base sizes
+var baseSphereR = range * 0.0025 * DATA.pointSize / 10.0 * 0.5;
 
-// Single merged arrow geometry: shaft + head as one object
+// Arrow geometry (unit arrow along +Z)
 function makeArrowGeo(shaftR, headR, shaftFrac) {
   var segs = 8;
   var headFrac = 1.0 - shaftFrac;
@@ -230,41 +209,94 @@ function makeArrowGeo(shaftR, headR, shaftFrac) {
 }
 var arrowGeo = makeArrowGeo(0.025, 0.08, 0.7);
 
-var arrowGroups = [];
+// Pre-compute arrow directions and quaternions (immutable)
 var zAxis = new THREE.Vector3(0, 0, 1);
-var dummy = new THREE.Object3D();
-
+var arrowBase = [];
 for (var ai = 0; ai < DATA.k; ai++) {
   var dirs = DATA['arrow_' + ai];
+  var ab = [];
+  for (var i = 0; i < DATA.n; i++) {
+    var adx = dirs[i*3], ady = dirs[i*3+1], adz = dirs[i*3+2];
+    var alen = Math.sqrt(adx*adx + ady*ady + adz*adz);
+    if (alen < 1e-7) {
+      ab.push(null);
+    } else {
+      var dv = new THREE.Vector3(adx/alen, ady/alen, adz/alen);
+      ab.push({ dir: dv, len: alen, quat: new THREE.Quaternion().setFromUnitVectors(zAxis, dv) });
+    }
+  }
+  arrowBase.push(ab);
+}
+
+// Create meshes
+var sphereGeo = new THREE.SphereGeometry(1, 16, 12);
+var sphereMat = new THREE.MeshPhongMaterial({ shininess: 60 });
+var points = new THREE.InstancedMesh(sphereGeo, sphereMat, DATA.n);
+var ptColor = new THREE.Color();
+for (var i = 0; i < DATA.n; i++) {
+  var c = LABEL_PALETTE[DATA.labels[i] % LABEL_PALETTE.length];
+  ptColor.setRGB(c[0], c[1], c[2]);
+  points.setColorAt(i, ptColor);
+}
+points.instanceColor.needsUpdate = true;
+scene.add(points);
+
+var arrowGroups = [];
+for (var ai = 0; ai < DATA.k; ai++) {
   var hex = ARROW_HEX[ai % ARROW_HEX.length];
   var mat = new THREE.MeshLambertMaterial({ color: hex, transparent: true, opacity: 0.85 });
   var mesh = new THREE.InstancedMesh(arrowGeo, mat, DATA.n);
-
-  for (var i = 0; i < DATA.n; i++) {
-    var px = DATA.spatial[i*3], py = DATA.spatial[i*3+1], pz = DATA.spatial[i*3+2];
-    var dx = dirs[i*3], dy = dirs[i*3+1], dz = dirs[i*3+2];
-    var len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-
-    if (len < 1e-7) {
-      dummy.scale.set(0, 0, 0);
-      dummy.position.set(px, py, pz);
-      dummy.quaternion.identity();
-    } else {
-      var dirV = new THREE.Vector3(dx/len, dy/len, dz/len);
-      var quat = new THREE.Quaternion().setFromUnitVectors(zAxis, dirV);
-      dummy.position.set(px + dirV.x * sphereR, py + dirV.y * sphereR, pz + dirV.z * sphereR);
-      dummy.quaternion.copy(quat);
-      dummy.scale.set(len, len, len);
-    }
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
-  }
-
-  mesh.instanceMatrix.needsUpdate = true;
   mesh.visible = (ai === 0);
   scene.add(mesh);
   arrowGroups.push({ mesh: mesh, vis: ai === 0 });
 }
+
+// === DENSITY KNOB ===
+// density > 1: objects bigger, positions squeeze toward center. Denser.
+// density < 1: objects smaller, positions spread out. Sparser.
+var density = 1.0;
+var ptDummy = new THREE.Object3D();
+var arDummy = new THREE.Object3D();
+
+function rebuildAll() {
+  var sr = baseSphereR * density;
+  var posScale = 1.0 / density;  // positions squeeze when density goes up
+
+  // Points
+  for (var i = 0; i < DATA.n; i++) {
+    var bx = DATA.spatial[i*3] - cx, by = DATA.spatial[i*3+1] - cy, bz = DATA.spatial[i*3+2] - cz;
+    ptDummy.position.set(cx + bx * posScale, cy + by * posScale, cz + bz * posScale);
+    ptDummy.scale.set(sr, sr, sr);
+    ptDummy.updateMatrix();
+    points.setMatrixAt(i, ptDummy.matrix);
+  }
+  points.instanceMatrix.needsUpdate = true;
+
+  // Arrows
+  for (var ai = 0; ai < DATA.k; ai++) {
+    var ab = arrowBase[ai];
+    var mesh = arrowGroups[ai].mesh;
+    for (var i = 0; i < DATA.n; i++) {
+      var bx = DATA.spatial[i*3] - cx, by = DATA.spatial[i*3+1] - cy, bz = DATA.spatial[i*3+2] - cz;
+      var px = cx + bx * posScale, py = cy + by * posScale, pz = cz + bz * posScale;
+      var b = ab[i];
+      if (!b) {
+        arDummy.scale.set(0, 0, 0);
+        arDummy.position.set(px, py, pz);
+        arDummy.quaternion.identity();
+      } else {
+        var aLen = b.len * density;
+        arDummy.position.set(px + b.dir.x * sr, py + b.dir.y * sr, pz + b.dir.z * sr);
+        arDummy.quaternion.copy(b.quat);
+        arDummy.scale.set(aLen, aLen, aLen);
+      }
+      arDummy.updateMatrix();
+      mesh.setMatrixAt(i, arDummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+rebuildAll();
 
 var curArrow = 0;
 
@@ -553,6 +585,9 @@ document.addEventListener('keydown', function(e){
   else if(e.code==='KeyO'){ setMode(camMode==='fly'?'orbit':'fly'); }
   else if(e.code==='KeyB'&&!locked){ toggleBackground(); }
   else if(e.code==='KeyG'){ orbitGroup.visible=!orbitGroup.visible; }
+  else if(e.code==='Equal'||e.code==='NumpadAdd'){ density=Math.min(10,density*1.15); rebuildAll(); updateHUD(); }
+  else if(e.code==='Minus'||e.code==='NumpadSubtract'){ density=Math.max(0.1,density/1.15); rebuildAll(); updateHUD(); }
+  else if(e.code==='Backspace'){ density=1.0; rebuildAll(); updateHUD(); }
   else if(e.code==='KeyP'&&!locked){ points.visible=!points.visible; }
   else if(e.code.match(/^Digit[0-9]$/)&&!locked){
     var num=parseInt(e.code[5]);
@@ -576,7 +611,8 @@ function updateHUD(){
   else el.textContent=vis.length+'/'+DATA.k+' arrows visible';
   var modeStr = camMode === 'orbit' ? 'ORBIT' : 'FLY';
   var speedStr = camMode === 'fly' ? ' | Speed: ' + flySpeed.toFixed(1) : '';
-  document.getElementById('speed-status').textContent = modeStr + speedStr;
+  var densStr = density !== 1.0 ? ' | Density: ' + density.toFixed(2) + 'x' : '';
+  document.getElementById('speed-status').textContent = modeStr + speedStr + densStr;
   // Adapt HUD colors for background
   document.getElementById('hud').style.color = darkBg ? '#eee' : '#222';
   document.getElementById('arrow-status').style.color = darkBg ? '#aaa' : '#555';
