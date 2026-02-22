@@ -70,8 +70,13 @@ class InformationGapAnalyzer:
 
         captured, residual = self._classify_dimensions(max_abs_corr, min_res, d)
 
-        # Sort residual dims by how poorly they're captured (lowest correlation first)
-        residual_sorted = sorted(residual, key=lambda dim: max_abs_corr[dim])
+        # Filter out zero-variance (constant) dims — they carry no information
+        dim_var = np.var(X_high, axis=0)
+        residual = [d for d in residual if dim_var[d] > 1e-10]
+
+        # Sort residual dims by variance descending (most informative first)
+        # so encoders that only use the first N dims get the best ones
+        residual_sorted = sorted(residual, key=lambda dim: dim_var[dim], reverse=True)
 
         residual_data = (
             X_high[:, residual_sorted]

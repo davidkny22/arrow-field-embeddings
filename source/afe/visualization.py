@@ -89,6 +89,10 @@ def plot_afe(
     if arrow_colors is None:
         arrow_colors = DEFAULT_ARROW_COLORS
 
+    # Auto-scale arrows relative to spatial extent
+    spatial_range = np.ptp(spatial, axis=0).mean()  # average axis spread
+    auto_sizeref = spatial_range * 0.03 * arrow_scale
+
     fig = go.Figure()
 
     # Points
@@ -132,7 +136,7 @@ def plot_afe(
                     colorscale=[[0, color], [1, color]],
                     showscale=False,
                     sizemode="absolute",
-                    sizeref=0.3 * arrow_scale,
+                    sizeref=auto_sizeref,
                     name=f"Arrow {ai}",
                     opacity=0.7,
                 )
