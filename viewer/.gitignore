@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Generated presets (regenerate with: python viewer/scripts/generate_presets.py)
+public/presets/*.json.gz
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
