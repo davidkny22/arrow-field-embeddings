@@ -10,6 +10,7 @@ import { SpaceScaleToggle } from './components/SpaceScaleToggle';
 import { ShareButton } from './components/ShareButton';
 import { RectangleSelector } from './components/RectangleSelector';
 import { ControlsHint } from './components/ControlsHint';
+import { ArrowControls } from './components/ArrowControls';
 import { useViewerStore } from './store/useViewerStore';
 import type { DatasetEntry } from './types/dataset';
 
@@ -69,6 +70,7 @@ function App() {
       <SpaceScaleToggle />
       <ControlModeToggle />
       <ControlsHint />
+      <ArrowControls />
       <RectangleSelector />
     </>
   );

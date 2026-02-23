@@ -14,6 +14,7 @@ import { FlyControls } from './FlyControls';
 import { DistanceRings } from './DistanceRings';
 import { CameraLight } from './CameraLight';
 import { BookmarkRestore } from './BookmarkRestore';
+import { ArrowField } from './ArrowField';
 import { useViewerStore } from '../store/useViewerStore';
 
 const FOG_COLOR = '#0a0a0a';
@@ -105,6 +106,7 @@ export function SceneCanvas() {
         <CameraLight />
         <group scale={[spaceScale, spaceScale, spaceScale]}>
           <PointCloud />
+          <ArrowField />
           <NeighborLines />
           <DistanceRings />
           <PointLabel />
