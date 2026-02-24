@@ -43,6 +43,8 @@ def generate_swiss_roll():
     )
     afe.fit_transform(X)
 
+    # Swiss roll has 3D spatial coordinates
+    feature_names = [f"x{i}" for i in range(X.shape[1])]
     label_names = [f"Band {i+1}" for i in range(n_bins)]
     export_for_viewer(
         afe, X,
@@ -50,6 +52,7 @@ def generate_swiss_roll():
         path=str(PRESETS_DIR / "swiss_roll_direct_1arr.json.gz"),
         dataset_name="Swiss Roll",
         label_names=label_names,
+        feature_names=feature_names,
     )
     return {
         "id": "swiss_roll_direct_1arr",
@@ -74,6 +77,8 @@ def generate_mnist():
     )
     afe.fit_transform(X)
 
+    # MNIST: 784 pixel features
+    feature_names = [f"pixel_{i}" for i in range(X.shape[1])]
     label_names = [str(i) for i in range(10)]
     export_for_viewer(
         afe, X,
@@ -81,6 +86,7 @@ def generate_mnist():
         path=str(PRESETS_DIR / "mnist_adaptive_25arr.json.gz"),
         dataset_name="MNIST Digits",
         label_names=label_names,
+        feature_names=feature_names,
     )
     return {
         "id": "mnist_adaptive_25arr",
@@ -105,11 +111,14 @@ def generate_tabula_muris():
     )
     afe.fit_transform(X)
 
+    # Tabula Muris is PCA-50 transformed; label dims as PC components
+    feature_names = [f"PC{i+1}" for i in range(X.shape[1])]
     export_for_viewer(
         afe, X,
         labels=y,
         path=str(PRESETS_DIR / "tabula_muris_direct_25arr.json.gz"),
         dataset_name="Tabula Muris",
+        feature_names=feature_names,
     )
     return {
         "id": "tabula_muris_direct_25arr",

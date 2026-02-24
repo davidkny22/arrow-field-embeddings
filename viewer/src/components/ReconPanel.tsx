@@ -24,7 +24,7 @@ export function ReconPanel() {
   const gapPct = gap_report.information_gap_score * 100;
 
   return (
-    <div className="fixed right-4 bottom-20 z-40 w-80 rounded-lg bg-black/80 p-4 text-white backdrop-blur-sm ring-1 ring-white/10">
+    <div className="w-80 rounded-lg bg-black/80 p-4 text-white backdrop-blur-sm ring-1 ring-white/10">
       {/* Header */}
       <div className="mb-3 text-xs uppercase tracking-wider text-white/40">
         Reconstruction Quality

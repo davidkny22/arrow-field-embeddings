@@ -72,6 +72,8 @@ export function ClusterLabels() {
   const dataset = useViewerStore((s) => s.dataset);
   const introState = useViewerStore((s) => s.introState);
   const spaceScale = useViewerStore((s) => s.spaceScale);
+  const autoSpaceScale = useViewerStore((s) => s.autoSpaceScale);
+  const totalScale = autoSpaceScale * spaceScale;
 
   // Compute fade decay constant from coordinate extent (in world-space units)
   const fadeScale = useMemo(() => {
@@ -82,9 +84,9 @@ export function ClusterLabels() {
       const d = Math.sqrt(x * x + y * y + z * z);
       if (d > maxDist) maxDist = d;
     }
-    // 1.5x max centroid distance × spaceScale gives comfortable fade range
-    return (maxDist || 100) * spaceScale * 1.5;
-  }, [dataset, spaceScale]);
+    // 1.5x max centroid distance × totalScale gives comfortable fade range
+    return (maxDist || 100) * totalScale * 1.5;
+  }, [dataset, totalScale]);
 
   // Only show labels when there are a reasonable number of clusters
   // (skip continuous/numeric labels like Swiss Roll's float positions)

@@ -9,6 +9,8 @@ export function DistanceRings() {
   const selectedIndex = useViewerStore((s) => s.selectedIndex);
   const dataset = useViewerStore((s) => s.dataset);
   const spaceScale = useViewerStore((s) => s.spaceScale);
+  const autoSpaceScale = useViewerStore((s) => s.autoSpaceScale);
+  const totalScale = autoSpaceScale * spaceScale;
 
   if (selectedIndex == null || !dataset) return null;
 
@@ -19,7 +21,7 @@ export function DistanceRings() {
   return (
     <group position={[x, y, z]}>
       {RINGS.map((ring) => (
-        <mesh key={ring.radius} scale={[1 / spaceScale, 1 / spaceScale, 1 / spaceScale]}>
+        <mesh key={ring.radius} scale={[1 / totalScale, 1 / totalScale, 1 / totalScale]}>
           <sphereGeometry args={[ring.radius, 32, 16]} />
           <meshBasicMaterial
             wireframe

@@ -48,6 +48,65 @@ def _compute_per_point_recon_error(X_original, X_reconstructed):
     return (diff ** 2).mean(axis=1)
 
 
+def _build_arrow_dim_labels(afe, feature_names: Optional[list] = None) -> list:
+    """Build per-arrow dimension labels from the encoder mapping.
+
+    Returns a list of lists: arrow_dim_labels[i] = [dim_name, ...] for arrow i.
+    """
+    encoder = afe._encoder
+    gap_report = afe._gap_report
+    residual_dims = gap_report.get("residual_dims", [])
+    n_arrows = afe.n_arrows
+
+    def dim_name(idx: int) -> str:
+        if feature_names and idx < len(feature_names):
+            return str(feature_names[idx])
+        return f"dim_{idx}"
+
+    labels = []
+    mode = afe.encoding_mode
+
+    if mode == "direct":
+        # Arrow a maps to residual dims a*3, a*3+1, a*3+2
+        for a in range(n_arrows):
+            dims = []
+            for c in range(3):
+                d = a * 3 + c
+                if d < len(residual_dims):
+                    dims.append(dim_name(residual_dims[d]))
+            labels.append(dims if dims else [f"arrow_{a}"])
+
+    elif mode == "pca":
+        # Each arrow is a principal component
+        for a in range(n_arrows):
+            if hasattr(encoder, '_pca') and encoder._pca is not None:
+                explained = encoder._pca.explained_variance_ratio_
+                if a < len(explained):
+                    labels.append([f"PC{a+1} ({explained[a]:.1%} var)"])
+                else:
+                    labels.append([f"PC{a+1} (empty)"])
+            else:
+                labels.append([f"PC{a+1}"])
+
+    elif mode == "adaptive":
+        # Each arrow maps to a group of residual dims
+        groups = getattr(encoder, '_groups', None)
+        if groups:
+            for a in range(n_arrows):
+                if a < len(groups):
+                    dims = [dim_name(residual_dims[d]) for d in groups[a]
+                            if d < len(residual_dims)]
+                    labels.append(dims if dims else [f"group_{a}"])
+                else:
+                    labels.append([f"group_{a} (empty)"])
+        else:
+            labels = [[f"arrow_{a}"] for a in range(n_arrows)]
+    else:
+        labels = [[f"arrow_{a}"] for a in range(n_arrows)]
+
+    return labels
+
+
 def export_for_viewer(
     afe,
     X: np.ndarray,
@@ -55,6 +114,7 @@ def export_for_viewer(
     path: str = "dataset.json.gz",
     dataset_name: str = "Untitled",
     label_names: Optional[list] = None,
+    feature_names: Optional[list] = None,
     compress: bool = True,
     compute_metrics: bool = True,
 ):
@@ -74,6 +134,9 @@ def export_for_viewer(
         Human-readable name for the dataset.
     label_names : list of str, optional
         Unique label strings. If None, derived from labels.
+    feature_names : list of str, optional
+        Names for each original dimension (e.g. gene names). Used to label
+        which dimensions each arrow encodes.
     compress : bool
         Whether to gzip the output.
     compute_metrics : bool
@@ -194,6 +257,7 @@ def export_for_viewer(
             "n_captured_dims": len(gap_report.get("captured_dims", [])),
         },
         "metrics": {k: _safe_float(v) for k, v in metrics.items()},
+        "arrow_dim_labels": _build_arrow_dim_labels(afe, feature_names),
     }
 
     if recon_error is not None:

@@ -48,7 +48,7 @@ export function BookmarkRestore() {
     // Apply scale (set directly since cycleSpaceScale only cycles)
     if (bookmark.spaceScale !== store.spaceScale) {
       // Cycle until we hit the right scale
-      const scales = [0.5, 1, 2, 3];
+      const scales = [0.5, 1, 1.5, 2];
       const targetIdx = scales.indexOf(bookmark.spaceScale);
       const currentIdx = scales.indexOf(store.spaceScale);
       if (targetIdx >= 0 && currentIdx >= 0) {

@@ -5,6 +5,7 @@ export function InfoPanel() {
   const selectedIndex = useViewerStore((s) => s.selectedIndex);
   const dataset = useViewerStore((s) => s.dataset);
   const selectPoint = useViewerStore((s) => s.selectPoint);
+  const activeArrowIndex = useViewerStore((s) => s.activeArrowIndex);
 
   const [arrowsExpanded, setArrowsExpanded] = useState(false);
 
@@ -39,7 +40,7 @@ export function InfoPanel() {
   const reconError = dataset.recon_error?.[selectedIndex];
 
   return (
-    <div className="fixed right-4 top-4 z-40 w-80 rounded-lg bg-black/80 p-4 text-white backdrop-blur-sm ring-1 ring-white/10">
+    <div className="w-80 rounded-lg bg-black/80 p-4 text-white backdrop-blur-sm ring-1 ring-white/10">
       {/* Header: label + close */}
       <div className="mb-3 flex items-start justify-between gap-2">
         <h2 className="text-lg font-semibold leading-tight break-words">{label}</h2>
@@ -86,24 +87,40 @@ export function InfoPanel() {
           </button>
 
           {arrowsExpanded && (
-            <div className="max-h-48 overflow-y-auto rounded bg-white/5 p-2 space-y-1">
+            <div className="max-h-64 overflow-y-auto rounded bg-white/5 p-2 space-y-1">
               <div className="grid grid-cols-[auto_1fr_1fr_1fr] gap-x-3 text-xs text-white/40 mb-1 px-1">
                 <span>#</span>
-                <span>\u03B8</span>
-                <span>\u03C6</span>
+                <span>{'\u03B8'}</span>
+                <span>{'\u03C6'}</span>
                 <span>r</span>
               </div>
-              {arrows.map((a, j) => (
-                <div
-                  key={j}
-                  className="grid grid-cols-[auto_1fr_1fr_1fr] gap-x-3 font-mono text-xs text-white/60 px-1"
-                >
-                  <span className="text-white/30">{j}</span>
-                  <span>{a.theta.toFixed(3)}</span>
-                  <span>{a.phi.toFixed(3)}</span>
-                  <span>{a.r.toFixed(3)}</span>
-                </div>
-              ))}
+              {arrows.map((a, j) => {
+                const isActive = activeArrowIndex === j || activeArrowIndex === 'all';
+                const dimLabels = dataset.arrow_dim_labels?.[j];
+                return (
+                  <div
+                    key={j}
+                    className={`rounded px-1 py-0.5 cursor-pointer hover:bg-white/10 ${
+                      isActive ? 'bg-white/10' : ''
+                    }`}
+                    onClick={() => useViewerStore.getState().setActiveArrowIndex(j)}
+                  >
+                    <div className={`grid grid-cols-[auto_1fr_1fr_1fr] gap-x-3 font-mono text-xs ${
+                      isActive ? 'text-white' : 'text-white/60'
+                    }`}>
+                      <span className={isActive ? 'text-white/60' : 'text-white/30'}>{j}</span>
+                      <span>{a.theta.toFixed(3)}</span>
+                      <span>{a.phi.toFixed(3)}</span>
+                      <span>{a.r.toFixed(3)}</span>
+                    </div>
+                    {dimLabels && dimLabels.length > 0 && (
+                      <div className="text-[10px] text-white/40 mt-0.5 pl-4 break-words">
+                        {dimLabels.join(', ')}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

@@ -94,8 +94,9 @@ export function CameraAnimator() {
       orbitControls.autoRotate = false; // eslint-disable-line react-hooks/immutability
     }
 
-    // flyToTarget is in data coordinates; multiply by spaceScale for world-space
-    const s = useViewerStore.getState().spaceScale;
+    // flyToTarget is in data coordinates; multiply by total scale for world-space
+    const state = useViewerStore.getState();
+    const s = state.autoSpaceScale * state.spaceScale;
     const destination = new THREE.Vector3(...flyToTarget).multiplyScalar(s);
     const currentPos = camera.position.clone();
 

@@ -64,7 +64,7 @@ function computeAutoScale(
   if (median < 1e-10) return 1;
 
   // Scale so the median arrow is TARGET_FRACTION of the cloud diameter
-  const TARGET_FRACTION = 0.03;
+  const TARGET_FRACTION = 0.02;
   return (diameter * TARGET_FRACTION) / median;
 }
 
@@ -123,9 +123,13 @@ export function ArrowField() {
   const arrowDensity = useViewerStore((s) => s.arrowDensity);
   const arrowsVisible = useViewerStore((s) => s.arrowsVisible);
   const spaceScale = useViewerStore((s) => s.spaceScale);
+  const autoSpaceScale = useViewerStore((s) => s.autoSpaceScale);
+  const totalScale = autoSpaceScale * spaceScale;
 
   const meshRefs = useRef<(THREE.InstancedMesh | null)[]>([]);
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
+  // Maps instanceId → point index for each arrow mesh (for click handling)
+  const instanceToPointRef = useRef<number[][]>([]);
 
   // Compute auto-scale once per dataset
   const autoScale = useMemo(() => {
@@ -147,6 +151,8 @@ export function ArrowField() {
   // Create arrow geometry (shaft + cone head, base at origin, tip along +Y)
   const arrowGeometry = useMemo(() => {
     const geo = createArrowGeometry();
+    geo.computeBoundingSphere();
+    geo.computeBoundingBox();
     geometryRef.current = geo;
     return geo;
   }, []);
@@ -167,10 +173,18 @@ export function ArrowField() {
     const scale = autoScale * arrowScale;
     const density = Math.max(1, Math.round(arrowDensity));
 
+    // Rebuild instance-to-point mapping
+    instanceToPointRef.current = Array.from({ length: k }, () => []);
+
+    // Minimum visible size: 15% of the median-scaled arrow
+    // (autoScale already normalizes so median ≈ TARGET_FRACTION of diameter)
+    const minMag = autoScale * arrowScale * 0.15;
+
     for (let arrowIdx = 0; arrowIdx < k; arrowIdx++) {
       const mesh = meshRefs.current[arrowIdx];
       if (!mesh) continue;
 
+      const pointMap: number[] = [];
       let instanceCount = 0;
 
       for (let i = 0; i < n; i += density) {
@@ -178,24 +192,28 @@ export function ArrowField() {
         const phi = dataset.arrows[i * k * 3 + arrowIdx * 3 + 1]!;
         const r = dataset.arrows[i * k * 3 + arrowIdx * 3 + 2]!;
 
-        // Skip near-zero arrows
-        const mag = Math.abs(r) * scale;
-        if (mag < 1e-6) {
+        pointMap.push(i);
+
+        // Skip truly zero arrows (no data)
+        if (Math.abs(r) < 1e-8) {
           _matrix.makeScale(0, 0, 0);
           mesh.setMatrixAt(instanceCount, _matrix);
           instanceCount++;
           continue;
         }
 
+        // Clamp to minimum visible size
+        const mag = Math.max(Math.abs(r) * scale, minMag);
+
         // Arrow direction in Three.js Y-up coordinates
         const [dx, dy, dz] = sphericalToThreeJS(theta, phi, 1);
         directionQuaternion(dx, dy, dz, _quaternion);
 
-        // Position at point location (scaled by spaceScale to match point cloud)
+        // Position at point location (scaled to match point cloud group)
         _position.set(
-          dataset.positions[i * 3]! * spaceScale,
-          dataset.positions[i * 3 + 1]! * spaceScale,
-          dataset.positions[i * 3 + 2]! * spaceScale,
+          dataset.positions[i * 3]! * totalScale,
+          dataset.positions[i * 3 + 1]! * totalScale,
+          dataset.positions[i * 3 + 2]! * totalScale,
         );
 
         _scale.set(mag, mag, mag);
@@ -207,8 +225,10 @@ export function ArrowField() {
 
       mesh.count = instanceCount;
       mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      instanceToPointRef.current[arrowIdx] = pointMap;
     }
-  }, [dataset, autoScale, arrowScale, arrowDensity, spaceScale]);
+  }, [dataset, autoScale, arrowScale, arrowDensity, totalScale]);
 
   // Update visibility when active arrow or visibility changes
   useEffect(() => {
@@ -221,6 +241,13 @@ export function ArrowField() {
     }
   }, [dataset, activeArrowIndex, arrowsVisible]);
 
+  // Clean up global flag on unmount
+  useEffect(() => {
+    return () => {
+      delete (window as any).__arrowClickHandled;
+    };
+  }, []);
+
   if (!dataset || dataset.n_arrows === 0) return null;
 
   const k = dataset.n_arrows;
@@ -228,26 +255,48 @@ export function ArrowField() {
 
   return (
     <>
-      {Array.from({ length: k }, (_, arrowIdx) => (
-        <instancedMesh
-          key={arrowIdx}
-          ref={(el) => {
-            meshRefs.current[arrowIdx] = el;
-          }}
-          args={[arrowGeometry, undefined, maxInstances]}
-          frustumCulled={false}
-          visible={
-            arrowsVisible &&
-            (activeArrowIndex === 'all' || activeArrowIndex === arrowIdx)
-          }
-        >
-          <meshStandardMaterial
-            color={palette[arrowIdx] ?? new THREE.Color(1, 1, 1)}
-            roughness={0.4}
-            metalness={0.1}
-          />
-        </instancedMesh>
-      ))}
+      {Array.from({ length: k }, (_, arrowIdx) => {
+        const isVisible =
+          arrowsVisible &&
+          (activeArrowIndex === 'all' || activeArrowIndex === arrowIdx);
+        return (
+          <instancedMesh
+            key={arrowIdx}
+            ref={(el) => {
+              meshRefs.current[arrowIdx] = el;
+            }}
+            args={[arrowGeometry, undefined, maxInstances]}
+            frustumCulled={false}
+            visible={isVisible}
+            onClick={
+              isVisible
+                ? (e) => {
+                    e.stopPropagation();
+                    const instId = e.instanceId;
+                    if (instId != null) {
+                      const pointMap = instanceToPointRef.current[arrowIdx];
+                      if (pointMap && instId < pointMap.length) {
+                        const store = useViewerStore.getState();
+                        store.setClickedArrow({
+                          arrowIdx,
+                          pointIdx: pointMap[instId]!,
+                        });
+                        store.selectPoint(pointMap[instId]!);
+                      }
+                    }
+                    (window as any).__arrowClickHandled = true;
+                  }
+                : undefined
+            }
+          >
+            <meshStandardMaterial
+              color={palette[arrowIdx] ?? new THREE.Color(1, 1, 1)}
+              roughness={0.4}
+              metalness={0.1}
+            />
+          </instancedMesh>
+        );
+      })}
     </>
   );
 }

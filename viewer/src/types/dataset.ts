@@ -40,6 +40,9 @@ export interface AFEDataset {
     spearman_dist_corr: number;
   };
 
+  // Per-arrow dimension labels: arrow_dim_labels[i] = ["gene_X", "gene_Y", ...]
+  arrow_dim_labels?: string[][];
+
   // Per-point reconstruction error (optional, for color mode)
   recon_error?: number[];          // (n,) per-point MSE with full AFE
   recon_error_spatial?: number[];  // (n,) spatial-only MSE

@@ -11,6 +11,7 @@ import { ShareButton } from './components/ShareButton';
 import { RectangleSelector } from './components/RectangleSelector';
 import { ControlsHint } from './components/ControlsHint';
 import { ArrowControls } from './components/ArrowControls';
+import { ArrowInfoPanel } from './components/ArrowInfoPanel';
 import { ColorModeSelector } from './components/ColorModeSelector';
 import { MetricsBar } from './components/MetricsBar';
 import { ReconPanel } from './components/ReconPanel';
@@ -74,9 +75,12 @@ function App() {
       {/* Top-center: search */}
       <SearchBar />
 
-      {/* Right side: info + recon panels */}
-      <InfoPanel />
-      <ReconPanel />
+      {/* Right side: stacked panels */}
+      <div className="fixed right-4 top-4 z-40 flex flex-col gap-3 max-h-[calc(100vh-2rem)] overflow-y-auto pointer-events-none">
+        <div className="pointer-events-auto"><InfoPanel /></div>
+        <div className="pointer-events-auto"><ArrowInfoPanel /></div>
+        <div className="pointer-events-auto"><ReconPanel /></div>
+      </div>
 
       {/* Bottom-left: color modes, controls hint */}
       <ColorModeSelector />

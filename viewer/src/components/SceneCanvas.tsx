@@ -57,6 +57,8 @@ function CtrlPanSwap() {
 export function SceneCanvas() {
   const dataset = useViewerStore((s) => s.dataset);
   const spaceScale = useViewerStore((s) => s.spaceScale);
+  const autoSpaceScale = useViewerStore((s) => s.autoSpaceScale);
+  const totalScale = autoSpaceScale * spaceScale;
   const controlMode = useViewerStore((s) => s.controlMode);
   const [showStats, setShowStats] = useState(false);
 
@@ -99,12 +101,12 @@ export function SceneCanvas() {
         gl={{ antialias: true }}
         style={{ background: FOG_COLOR }}
       >
-        <fog attach="fog" args={[FOG_COLOR, fogNear * spaceScale, fogFar * spaceScale]} />
+        <fog attach="fog" args={[FOG_COLOR, fogNear * totalScale, fogFar * totalScale]} />
         <ambientLight intensity={0.4} />
         <directionalLight position={[50, 50, 50]} intensity={0.5} />
         <directionalLight position={[-50, -30, -50]} intensity={0.2} />
         <CameraLight />
-        <group scale={[spaceScale, spaceScale, spaceScale]}>
+        <group scale={[totalScale, totalScale, totalScale]}>
           <PointCloud />
           <NeighborLines />
           <DistanceRings />

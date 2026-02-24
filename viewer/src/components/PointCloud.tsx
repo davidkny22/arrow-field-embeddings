@@ -8,7 +8,7 @@ import { useGpuPicking, buildPickingColors } from '../hooks/useGpuPicking';
 const DRAG_THRESHOLD_PX = 3;
 
 // Inverse-log point sizing (TF projector formula)
-const POINT_SIZE_SCALE = 150;
+const POINT_SIZE_SCALE = 200;
 const POINT_SIZE_LOG_BASE = 8;
 const SCREEN_SCALE = 48.0;
 
@@ -142,14 +142,24 @@ export function PointCloud() {
   // Click handling
   useEffect(() => {
     const canvas = gl.domElement;
+
     const handleClick = (e: MouseEvent) => {
       if (wasDrag(e)) return;
+
+      // Arrow click was handled by R3F event system in ArrowField
+      if ((window as any).__arrowClickHandled) {
+        (window as any).__arrowClickHandled = false;
+        return;
+      }
+
       const idx = pickedIndex.current;
       if (idx != null && dataset && idx < dataset.n_points) {
         useViewerStore.getState().selectPoint(idx);
+        useViewerStore.getState().setClickedArrow(null);
       } else {
         const store = useViewerStore.getState();
         store.selectPoint(null);
+        store.setClickedArrow(null);
         if (store.highlightedIndices.size > 0) {
           store.setHighlightedIndices(new Set());
         }

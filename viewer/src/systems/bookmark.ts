@@ -71,7 +71,7 @@ export function decodeBookmark(hash: string): BookmarkState | null {
   const tz = parseFloat(params.get(KEY_TGT_Z) ?? '0');
 
   const scaleRaw = parseFloat(params.get(KEY_SCALE) ?? '1');
-  const spaceScale = [0.5, 1, 2, 3].includes(scaleRaw) ? scaleRaw : 1;
+  const spaceScale = [0.5, 1, 1.5, 2].includes(scaleRaw) ? scaleRaw : 0.5;
 
   const colorRaw = params.get(KEY_COLOR) ?? 'cluster';
   const colorMode = (['cluster', 'highlight', 'neighborhood', 'arrow_magnitude', 'arrow_direction', 'recon_error'].includes(colorRaw)
