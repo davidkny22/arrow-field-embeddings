@@ -11,6 +11,9 @@ import { ShareButton } from './components/ShareButton';
 import { RectangleSelector } from './components/RectangleSelector';
 import { ControlsHint } from './components/ControlsHint';
 import { ArrowControls } from './components/ArrowControls';
+import { ColorModeSelector } from './components/ColorModeSelector';
+import { MetricsBar } from './components/MetricsBar';
+import { ReconPanel } from './components/ReconPanel';
 import { useViewerStore } from './store/useViewerStore';
 import type { DatasetEntry } from './types/dataset';
 
@@ -63,14 +66,32 @@ function App() {
     <>
       <LoadingScreen />
       <SceneCanvas />
+
+      {/* Top-left: dataset selector + metrics */}
       <DatasetSelector />
+      <MetricsBar />
+
+      {/* Top-center: search */}
       <SearchBar />
+
+      {/* Right side: info + recon panels */}
       <InfoPanel />
-      <ShareButton />
-      <SpaceScaleToggle />
-      <ControlModeToggle />
+      <ReconPanel />
+
+      {/* Bottom-left: color modes, controls hint */}
+      <ColorModeSelector />
       <ControlsHint />
+
+      {/* Bottom-center: arrow controls */}
       <ArrowControls />
+
+      {/* Bottom-right: scale, mode, share/download */}
+      <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2">
+        <SpaceScaleToggle />
+        <ControlModeToggle />
+        <ShareButton />
+      </div>
+
       <RectangleSelector />
     </>
   );

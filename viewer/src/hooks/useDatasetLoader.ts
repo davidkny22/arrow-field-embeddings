@@ -10,20 +10,21 @@ async function loadDataset(url: string): Promise<AFEDataset> {
   }
 
   const buffer = await response.arrayBuffer();
-  let jsonString: string;
+  const bytes = new Uint8Array(buffer);
 
-  // Vite dev server may auto-decompress .gz via Content-Encoding.
-  // Try plain text first; fall back to pako if it fails to parse.
-  const decoded = new TextDecoder().decode(buffer);
-  try {
-    JSON.parse(decoded);
-    jsonString = decoded;
-  } catch {
+  // Detect gzip magic bytes (0x1f 0x8b)
+  const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+
+  let jsonString: string;
+  if (isGzip) {
     try {
-      jsonString = pako.inflate(new Uint8Array(buffer), { to: 'string' });
+      const decompressed = pako.inflate(bytes);
+      jsonString = new TextDecoder().decode(decompressed);
     } catch {
       throw new Error('Failed to decompress dataset — file may be corrupted');
     }
+  } else {
+    jsonString = new TextDecoder().decode(bytes);
   }
 
   let data: AFEDataset;

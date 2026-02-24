@@ -1,17 +1,17 @@
 [
   {
-    "id": "swiss_roll_direct_3arr",
-    "label": "Swiss Roll (3k, 3 arrows)",
-    "url": "/presets/swiss_roll_direct_3arr.json.gz"
+    "id": "swiss_roll_direct_1arr",
+    "label": "Swiss Roll (3k, 1 arrow)",
+    "url": "/presets/swiss_roll_direct_1arr.json.gz"
   },
   {
-    "id": "mnist_pca_25arr",
-    "label": "MNIST (10k, 25 arrows, PCA)",
-    "url": "/presets/mnist_pca_25arr.json.gz"
+    "id": "mnist_adaptive_25arr",
+    "label": "MNIST (10k, 25 arrows, adaptive)",
+    "url": "/presets/mnist_adaptive_25arr.json.gz"
   },
   {
     "id": "tabula_muris_direct_25arr",
-    "label": "Tabula Muris (20k cells, 25 arrows)",
+    "label": "Tabula Muris (20k cells, 25 arrows, direct)",
     "url": "/presets/tabula_muris_direct_25arr.json.gz"
   }
 ]

@@ -86,11 +86,20 @@ export function ClusterLabels() {
     return (maxDist || 100) * spaceScale * 1.5;
   }, [dataset, spaceScale]);
 
-  if (!dataset || introState !== 'done') return null;
+  // Only show labels when there are a reasonable number of clusters
+  // (skip continuous/numeric labels like Swiss Roll's float positions)
+  const visibleClusters = useMemo(() => {
+    if (!dataset) return [];
+    const MAX_LABELS = 60;
+    if (dataset.clusters.length > MAX_LABELS) return [];
+    return dataset.clusters;
+  }, [dataset]);
+
+  if (!dataset || introState !== 'done' || visibleClusters.length === 0) return null;
 
   return (
     <>
-      {dataset.clusters.map((cluster) => (
+      {visibleClusters.map((cluster) => (
         <DepthFadingLabel
           key={cluster.id}
           position={cluster.centroid}

@@ -6,9 +6,9 @@ import { useViewerStore } from '../store/useViewerStore';
  *
  * Shortcuts (when not typing in an input):
  *   ←/→   Cycle arrow index
- *   A      Toggle all arrows
- *   H      Toggle arrow visibility
- *   1-9    Jump to arrow index
+ *   Q      Toggle all arrows (disabled in fly mode)
+ *   H      Toggle arrow visibility (disabled in fly mode)
+ *   1-9    Jump to arrow index (disabled in fly mode)
  */
 export function ArrowControls() {
   const dataset = useViewerStore((s) => s.dataset);
@@ -25,6 +25,7 @@ export function ArrowControls() {
 
       const store = useViewerStore.getState();
       if (!store.dataset || store.dataset.n_arrows === 0) return;
+      const isFly = store.controlMode === 'fly';
 
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
@@ -32,13 +33,14 @@ export function ArrowControls() {
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
         store.nextArrow();
-      } else if (e.key === 'a' || e.key === 'A') {
+      } else if ((e.key === 'q' || e.key === 'Q') && !isFly) {
+        // Toggle all arrows (Q to avoid conflict with WASD fly controls)
         store.setActiveArrowIndex(
           store.activeArrowIndex === 'all' ? 0 : 'all',
         );
-      } else if (e.key === 'h' || e.key === 'H') {
+      } else if ((e.key === 'h' || e.key === 'H') && !isFly) {
         store.setArrowsVisible(!store.arrowsVisible);
-      } else if (e.key >= '1' && e.key <= '9') {
+      } else if (e.key >= '1' && e.key <= '9' && !isFly) {
         const idx = parseInt(e.key, 10) - 1;
         if (idx < store.dataset.n_arrows) {
           store.setActiveArrowIndex(idx);
@@ -110,7 +112,7 @@ export function ArrowControls() {
                 ? 'bg-white/20 text-white'
                 : 'bg-black/60 text-white/70 hover:bg-black/80 hover:text-white'
             }`}
-            title="Show all arrows (A)"
+            title="Show all arrows (Q)"
           >
             ALL
           </button>

@@ -106,12 +106,12 @@ export function SceneCanvas() {
         <CameraLight />
         <group scale={[spaceScale, spaceScale, spaceScale]}>
           <PointCloud />
-          <ArrowField />
           <NeighborLines />
           <DistanceRings />
           <PointLabel />
           <ClusterLabels />
         </group>
+        <ArrowField />
         <CameraAnimator />
         <OrbitControls
           makeDefault

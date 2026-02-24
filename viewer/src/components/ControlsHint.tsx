@@ -84,7 +84,7 @@ export function ControlsHint() {
 
   return (
     <div
-      className={`fixed left-4 bottom-20 z-40 pointer-events-none transition-opacity duration-500 ${
+      className={`fixed left-4 bottom-36 z-40 pointer-events-none transition-opacity duration-500 ${
         fading ? 'opacity-0' : 'opacity-100'
       }`}
     >

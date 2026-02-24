@@ -27,6 +27,21 @@ def _compute_clusters(labels: np.ndarray, positions: np.ndarray):
     return clusters
 
 
+def _safe_float(v):
+    """Convert to float, replacing NaN/Inf with 0."""
+    f = float(v)
+    if np.isnan(f) or np.isinf(f):
+        return 0.0
+    return f
+
+
+def _sanitize(obj):
+    """json.dumps default handler — turn non-serializable values into 0."""
+    if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+        return 0.0
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+
 def _compute_per_point_recon_error(X_original, X_reconstructed):
     """Per-point MSE between original and reconstructed."""
     diff = X_original - X_reconstructed
@@ -178,7 +193,7 @@ def export_for_viewer(
             "n_residual_dims": len(gap_report.get("residual_dims", [])),
             "n_captured_dims": len(gap_report.get("captured_dims", [])),
         },
-        "metrics": metrics,
+        "metrics": {k: _safe_float(v) for k, v in metrics.items()},
     }
 
     if recon_error is not None:
@@ -190,7 +205,9 @@ def export_for_viewer(
     out_path = Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    json_bytes = json.dumps(dataset, separators=(",", ":")).encode("utf-8")
+    json_bytes = json.dumps(
+        dataset, separators=(",", ":"), allow_nan=False, default=_sanitize
+    ).encode("utf-8")
 
     if compress:
         with gzip.open(out_path, "wb") as f:

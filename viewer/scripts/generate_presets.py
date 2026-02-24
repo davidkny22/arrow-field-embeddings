@@ -22,14 +22,20 @@ PRESETS_DIR = PROJECT_ROOT / "viewer" / "public" / "presets"
 
 
 def generate_swiss_roll():
-    """Swiss roll: 3k points, no meaningful labels, 3 arrows."""
+    """Swiss roll: 3k points, 1 arrow (only 1 residual dim for this simple manifold)."""
+    import numpy as np
     from benchmarks.datasets import load_swiss_roll
 
-    print("\n=== Swiss Roll (3k pts, 3 arrows, direct) ===")
+    print("\n=== Swiss Roll (3k pts, 1 arrow, direct) ===")
     X, y = load_swiss_roll(n_samples=3000)
 
+    # Bin continuous position into 10 bands for meaningful cluster colors
+    n_bins = 10
+    bins = np.linspace(y.min(), y.max() + 1e-8, n_bins + 1)
+    y_binned = np.digitize(y, bins) - 1  # 0-indexed bin labels
+
     afe = ArrowFieldEmbedding(
-        n_arrows=3,
+        n_arrows=1,
         encoding_mode="direct",
         backend="pacmap",
         random_state=42,
@@ -37,29 +43,31 @@ def generate_swiss_roll():
     )
     afe.fit_transform(X)
 
+    label_names = [f"Band {i+1}" for i in range(n_bins)]
     export_for_viewer(
         afe, X,
-        labels=y,
-        path=str(PRESETS_DIR / "swiss_roll_direct_3arr.json.gz"),
+        labels=y_binned,
+        path=str(PRESETS_DIR / "swiss_roll_direct_1arr.json.gz"),
         dataset_name="Swiss Roll",
+        label_names=label_names,
     )
     return {
-        "id": "swiss_roll_direct_3arr",
-        "label": "Swiss Roll (3k, 3 arrows)",
-        "url": "/presets/swiss_roll_direct_3arr.json.gz",
+        "id": "swiss_roll_direct_1arr",
+        "label": "Swiss Roll (3k, 1 arrow)",
+        "url": "/presets/swiss_roll_direct_1arr.json.gz",
     }
 
 
 def generate_mnist():
-    """MNIST: 10k digits, 10 classes, PCA mode, 25 arrows."""
+    """MNIST: 10k digits, 10 classes, adaptive mode, 25 arrows."""
     from benchmarks.datasets import load_mnist
 
-    print("\n=== MNIST (10k pts, 25 arrows, pca) ===")
+    print("\n=== MNIST (10k pts, 25 arrows, adaptive) ===")
     X, y = load_mnist(n_samples=10000)
 
     afe = ArrowFieldEmbedding(
         n_arrows=25,
-        encoding_mode="pca",
+        encoding_mode="adaptive",
         backend="pacmap",
         random_state=42,
         verbose=True,
@@ -70,14 +78,14 @@ def generate_mnist():
     export_for_viewer(
         afe, X,
         labels=y,
-        path=str(PRESETS_DIR / "mnist_pca_25arr.json.gz"),
+        path=str(PRESETS_DIR / "mnist_adaptive_25arr.json.gz"),
         dataset_name="MNIST Digits",
         label_names=label_names,
     )
     return {
-        "id": "mnist_pca_25arr",
-        "label": "MNIST (10k, 25 arrows, PCA)",
-        "url": "/presets/mnist_pca_25arr.json.gz",
+        "id": "mnist_adaptive_25arr",
+        "label": "MNIST (10k, 25 arrows, adaptive)",
+        "url": "/presets/mnist_adaptive_25arr.json.gz",
     }
 
 
