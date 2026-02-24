@@ -127,6 +127,67 @@ def generate_tabula_muris():
     }
 
 
+def generate_ag_news():
+    """AG News: 10k sentences embedded with all-MiniLM-L6-v2, 4 classes, direct, 25 arrows."""
+    import numpy as np
+
+    print("\n=== AG News / MiniLM (10k pts, 25 arrows, direct) ===")
+
+    cache_path = PROJECT_ROOT / "data" / "ag_news_minilm.npz"
+    if cache_path.exists():
+        print(f"Loading cached embeddings from {cache_path}")
+        data = np.load(cache_path, allow_pickle=True)
+        X, y = data["X"], data["y"]
+        label_names = data["label_names"].tolist()
+    else:
+        from datasets import load_dataset
+        from sentence_transformers import SentenceTransformer
+
+        print("Downloading AG News and embedding with MiniLM...")
+        ds = load_dataset("ag_news", split="train")
+        rng = np.random.default_rng(42)
+        indices = rng.choice(len(ds), size=10000, replace=False)
+        indices.sort()
+        subset = ds.select(indices.tolist())
+
+        texts = subset["text"]
+        y = np.array(subset["label"])
+        label_names = ["World", "Sports", "Business", "Sci/Tech"]
+
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        X = np.array(model.encode(texts, show_progress_bar=True, batch_size=256), dtype=np.float32)
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(cache_path, X=X, y=y,
+                            texts=np.array(texts, dtype=object),
+                            label_names=np.array(label_names))
+        print(f"Cached embeddings to {cache_path}")
+
+    afe = ArrowFieldEmbedding(
+        n_arrows=25,
+        encoding_mode="direct",
+        backend="pacmap",
+        random_state=42,
+        verbose=True,
+    )
+    afe.fit_transform(X)
+
+    feature_names = [f"emb_{i}" for i in range(X.shape[1])]
+    export_for_viewer(
+        afe, X,
+        labels=y,
+        path=str(PRESETS_DIR / "ag_news_minilm_direct_25arr.json.gz"),
+        dataset_name="AG News (MiniLM)",
+        label_names=label_names,
+        feature_names=feature_names,
+    )
+    return {
+        "id": "ag_news_minilm_direct_25arr",
+        "label": "AG News / MiniLM (10k, 25 arrows)",
+        "url": "/presets/ag_news_minilm_direct_25arr.json.gz",
+    }
+
+
 def main():
     PRESETS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -136,6 +197,7 @@ def main():
     index.append(generate_swiss_roll())
     index.append(generate_mnist())
     index.append(generate_tabula_muris())
+    index.append(generate_ag_news())
 
     # Write index
     index_path = PRESETS_DIR / "index.json"

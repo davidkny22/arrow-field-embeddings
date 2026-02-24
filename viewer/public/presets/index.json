@@ -13,5 +13,10 @@
     "id": "tabula_muris_direct_25arr",
     "label": "Tabula Muris (20k cells, 25 arrows)",
     "url": "/presets/tabula_muris_direct_25arr.json.gz"
+  },
+  {
+    "id": "ag_news_minilm_direct_25arr",
+    "label": "AG News / MiniLM (10k, 25 arrows)",
+    "url": "/presets/ag_news_minilm_direct_25arr.json.gz"
   }
 ]
