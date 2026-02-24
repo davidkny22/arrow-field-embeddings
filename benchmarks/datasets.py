@@ -241,6 +241,51 @@ def load_20newsgroups(n_samples=10000, n_components=500):
     return X.astype(np.float32), y.astype(int)
 
 
+def load_ag_news(n_samples=10000):
+    """AG News: sentence embeddings via all-MiniLM-L6-v2 (384d).
+
+    4 classes: World, Sports, Business, Sci/Tech.
+    Uses cached embeddings from data/ag_news_minilm.npz if available,
+    otherwise downloads AG News and embeds on the fly.
+    """
+    cache_path = DATA_DIR / "ag_news_minilm.npz"
+    if cache_path.exists():
+        data = np.load(cache_path, allow_pickle=True)
+        X, y = data['X'], data['y']
+    else:
+        from datasets import load_dataset
+        from sentence_transformers import SentenceTransformer
+
+        ds = load_dataset("ag_news", split="train")
+        rng = np.random.default_rng(42)
+        indices = rng.choice(len(ds), size=10000, replace=False)
+        indices.sort()
+        subset = ds.select(indices.tolist())
+
+        texts = subset["text"]
+        y = np.array(subset["label"])
+
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+        X = np.array(
+            model.encode(texts, show_progress_bar=True, batch_size=256),
+            dtype=np.float32,
+        )
+
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            cache_path, X=X, y=y,
+            texts=np.array(texts, dtype=object),
+            label_names=np.array(["World", "Sports", "Business", "Sci/Tech"]),
+        )
+
+    if n_samples and n_samples < len(X):
+        rng = np.random.RandomState(42)
+        idx = rng.choice(len(X), n_samples, replace=False)
+        X, y = X[idx], y[idx]
+
+    return X.astype(np.float32), y.astype(int)
+
+
 # ---------------------------------------------------------------------------
 # scRNA-seq datasets
 # ---------------------------------------------------------------------------
@@ -886,7 +931,7 @@ def load_hydra():
 LABELED_DATASETS = {
     # General
     'mnist', 'fashion_mnist', 'hierarchical_gaussians',
-    'coil20', 'usps', '20newsgroups',
+    'coil20', 'usps', '20newsgroups', 'ag_news',
     # scRNA (all have cell type labels)
     'pbmc3k', 'pbmc68k_reduced', 'baron_human', 'baron_mouse',
     'zeisel', 'lawlor', 'tabula_muris', 'macosko',
@@ -906,6 +951,7 @@ DATASETS_GENERAL = {
     'coil20': load_coil20,
     'usps': load_usps,
     '20newsgroups': load_20newsgroups,
+    'ag_news': load_ag_news,
 }
 
 DATASETS_SCRNA = {
