@@ -1,82 +1,156 @@
-"""Compare AFE vs standard PaCMAP 3D on information preservation.
+"""Compare DR methods: standalone vs AFE-enhanced, across multiple backends.
 
-Measures how much additional information AFE's arrows capture beyond
-what spatial position alone provides.
+Composable multi-backend benchmark runner with JSONL resumability,
+optimal arrow-count selection, and comprehensive significance testing.
 
 Usage:
-    python benchmarks/compare_methods.py [--datasets ...] [--n-arrows 3] [--n-seeds 3]
-    python benchmarks/compare_methods.py --category scrna --n-arrows 5,25,50
+    python benchmarks/compare_methods.py --category all --n-seeds 10
+    python benchmarks/compare_methods.py --datasets mnist --backends pacmap,umap --n-seeds 3
+    python benchmarks/compare_methods.py --category scrna --n-arrows 47
+    python benchmarks/compare_methods.py --n-arrows sweep  # exploratory multi-count
     python benchmarks/compare_methods.py --list-datasets
 """
+
+# CRITICAL: Prevent OpenBLAS threading deadlock on Windows.
+# Must be set BEFORE any numpy/scipy/sklearn imports.
+# See: https://github.com/scipy/scipy/issues/20294
+#      https://github.com/scikit-learn/scikit-learn/pull/28692
+# Only OPENBLAS needs to be pinned to 1; OMP can use multiple threads safely.
+import os
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import argparse
 import json
 import time
 import sys
+import multiprocessing
 import numpy as np
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from afe import ArrowFieldEmbedding
+from afe.reproducibility import (
+    collect_machine_info,
+    collect_package_versions,
+    get_or_compute_spatial_embedding,
+)
+
+from benchmarks.config import (
+    ALL_BACKENDS,
+    ALL_MODES,
+    sort_datasets_by_cost,
+    get_optimal_arrow_count,
+    get_arrow_counts,
+)
 from benchmarks.datasets import (
     DATASETS, LABELED_DATASETS,
-    DATASETS_GENERAL, DATASETS_SCRNA, DATASET_CATEGORIES,
+    DATASET_CATEGORIES,
+)
+from benchmarks.io import (
+    load_completed,
+    load_all_results,
+    append_result,
+    _save_embedding,
+    _metadata_for_row,
+    _preprocessing_version,
 )
 from benchmarks.metrics import (
-    knn_recall,
-    spearman_distance_correlation,
-    random_triplet_accuracy,
-    centroid_triplet_accuracy,
-    reconstruction_error,
-    arrow_information_gain,
-    arrow_knn_recall,
-    arrow_consistency,
+    compute_spatial_embedding,
+    _compute_standard_metrics,
+    _compute_afe_metrics,
+)
+from benchmarks.significance import (
+    compute_significance,
+    aggregate_significance,
+)
+from benchmarks.reporting import (
+    print_summary,
+    print_significance_summary,
+    list_datasets,
 )
 
 
-def run_pacmap_baseline(X, labels, seed):
-    """Run standard PaCMAP 3D as baseline."""
-    import pacmap
+# ── Benchmark runners ───────────────────────────────────────────────────
 
+def run_standalone(X, labels, backend_name, seed, spatial=None,
+                   backend_params=None, save_embeddings=False,
+                   dataset_name=None, package_versions=None,
+                   machine_info=None, spatial_cache_hit=False,
+                   spatial_cache_path=None, spatial_compute_seconds=None):
+    """Run a standalone DR method (no AFE) as a baseline."""
     t0 = time.time()
-    reducer = pacmap.PaCMAP(n_components=3, random_state=seed)
-    Y = reducer.fit_transform(X).astype(np.float32)
-    elapsed = time.time() - t0
+    if spatial is None:
+        spatial = compute_spatial_embedding(
+            X, backend_name, seed, backend_params=backend_params
+        )
+        spatial_cache_hit = False
+        spatial_cache_path = None
+    Y = np.asarray(spatial, dtype=np.float32)
+    elapsed = (
+        float(spatial_compute_seconds)
+        if spatial_compute_seconds is not None
+        else time.time() - t0
+    )
+
+    if save_embeddings and dataset_name:
+        _save_embedding(dataset_name, backend_name, None, 0, seed, X, Y)
 
     metrics = {
-        "method": "pacmap_3d",
+        "type": "benchmark",
+        "method": f"{backend_name}_3d",
+        "backend": backend_name,
+        "afe_enhanced": False,
+        "encoding_mode": None,
+        "n_arrows": 0,
         "seed": seed,
         "time_seconds": elapsed,
-        "knn_recall_k10": knn_recall(X, Y, k=10),
-        "knn_recall_k50": knn_recall(X, Y, k=50),
-        "spearman_dist_corr": spearman_distance_correlation(X, Y),
-        "random_triplet_acc": random_triplet_accuracy(X, Y),
+        "n_samples": len(X),
+        "n_features": X.shape[1],
+        "spatial_cache_hit": bool(spatial_cache_hit),
+        "spatial_cache_path": str(spatial_cache_path) if spatial_cache_path else None,
+        "spatial_compute_seconds": elapsed,
     }
+    if dataset_name is not None:
+        metrics.update(_metadata_for_row(
+            dataset_name=dataset_name,
+            backend_name=backend_name,
+            backend_params=backend_params or {},
+            seed=seed,
+            encoding_mode=None,
+            n_arrows=0,
+            n_features=X.shape[1],
+            package_versions=package_versions,
+            machine_info=machine_info,
+        ))
 
-    # Reconstruction via linear regression (same as AFE uses)
-    n = len(Y)
-    Y_aug = np.column_stack([Y, np.ones(n)])
-    wb = np.linalg.lstsq(Y_aug, X, rcond=None)[0]
-    X_recon = Y_aug @ wb
-    metrics["reconstruction_mse"] = reconstruction_error(X, X_recon, metric='mse')
-    metrics["reconstruction_cosine"] = reconstruction_error(X, X_recon, metric='cosine')
-
-    if labels is not None:
-        ct = centroid_triplet_accuracy(X, Y, labels)
-        if ct is not None:
-            metrics["centroid_triplet_acc"] = ct
+    standard_metrics, _ = _compute_standard_metrics(X, Y, labels=labels, seed=seed)
+    metrics.update(standard_metrics)
 
     return metrics
 
 
-def run_afe(X, labels, encoding_mode, n_arrows, seed):
-    """Run AFE with specified mode."""
+def run_afe(X, labels, backend_name, encoding_mode, n_arrows, seed,
+            spatial=None, backend_params=None, save_embeddings=False,
+            dataset_name=None, package_versions=None, machine_info=None,
+            spatial_cache_hit=False, spatial_cache_path=None,
+            spatial_compute_seconds=None):
+    """Run AFE with a specific backend, mode, and arrow count."""
+    method_name = f"afe_{backend_name}_{encoding_mode}_{n_arrows}arr"
+
+    if spatial is None:
+        spatial = compute_spatial_embedding(
+            X, backend_name, seed, backend_params=backend_params
+        )
+        spatial_cache_hit = False
+        spatial_cache_path = None
+
     t0 = time.time()
     afe = ArrowFieldEmbedding(
         n_arrows=n_arrows,
         encoding_mode=encoding_mode,
-        backend="pacmap",
+        backend=np.asarray(spatial, dtype=np.float32),
+        backend_kwargs=None,
         random_state=seed,
         normalize_arrows=False,
     )
@@ -86,173 +160,316 @@ def run_afe(X, labels, encoding_mode, n_arrows, seed):
     spatial = result["spatial"]
     arrows = result["arrows"]
 
-    # Standard DR metrics (spatial only — same as PaCMAP baseline)
+    if save_embeddings and dataset_name:
+        _save_embedding(dataset_name, backend_name, encoding_mode, n_arrows,
+                        seed, X, spatial, arrows)
+
     metrics = {
-        "method": f"afe_{encoding_mode}_{n_arrows}arr",
+        "type": "benchmark",
+        "method": method_name,
+        "backend": backend_name,
+        "afe_enhanced": True,
         "encoding_mode": encoding_mode,
         "n_arrows": n_arrows,
         "seed": seed,
         "time_seconds": elapsed,
-        "knn_recall_k10": knn_recall(X, spatial, k=10),
-        "knn_recall_k50": knn_recall(X, spatial, k=50),
-        "spearman_dist_corr": spearman_distance_correlation(X, spatial),
-        "random_triplet_acc": random_triplet_accuracy(X, spatial),
+        "n_samples": len(X),
+        "n_features": X.shape[1],
+        "spatial_coordinates_shared": True,
+        "spatial_cache_hit": bool(spatial_cache_hit),
+        "spatial_cache_path": str(spatial_cache_path) if spatial_cache_path else None,
+        "shared_spatial_compute_seconds": spatial_compute_seconds,
+        "afe_encode_seconds": elapsed,
     }
+    if dataset_name is not None:
+        metrics.update(_metadata_for_row(
+            dataset_name=dataset_name,
+            backend_name=backend_name,
+            backend_params=backend_params or {},
+            seed=seed,
+            encoding_mode=encoding_mode,
+            n_arrows=n_arrows,
+            n_features=X.shape[1],
+            package_versions=package_versions,
+            machine_info=machine_info,
+        ))
 
-    # AFE-enhanced metrics (spatial + arrows)
-    metrics["arrow_knn_recall_k10"] = arrow_knn_recall(X, spatial, arrows, k=10)
-    metrics["arrow_knn_recall_k50"] = arrow_knn_recall(X, spatial, arrows, k=50)
-    metrics["arrow_consistency"] = arrow_consistency(arrows, X, k=10)
+    afe_metrics = _compute_afe_metrics(X, afe, spatial, arrows, labels=labels, seed=seed)
+    metrics.update(afe_metrics)
 
-    # Reconstruction
-    X_recon = afe.reconstruct()
-    metrics["reconstruction_mse"] = reconstruction_error(X, X_recon, metric='mse')
-    metrics["reconstruction_cosine"] = reconstruction_error(X, X_recon, metric='cosine')
-
-    # Spatial-only reconstruction for information gain
-    n = len(spatial)
-    sp_aug = np.column_stack([spatial, np.ones(n)])
-    wb = np.linalg.lstsq(sp_aug, X, rcond=None)[0]
-    X_spatial_recon = sp_aug @ wb
-    metrics["arrow_info_gain"] = arrow_information_gain(X, X_spatial_recon, X_recon)
-
-    if labels is not None:
-        ct = centroid_triplet_accuracy(X, spatial, labels)
-        if ct is not None:
-            metrics["centroid_triplet_acc"] = ct
-
-    # Metadata
+    # Gap metadata
     gap = result["metadata"]["gap_report"]
     metrics["n_residual_dims"] = len(gap["residual_dims"])
-    metrics["info_gap_score"] = gap["information_gap_score"]
+    metrics["spatial_information_gap"] = gap["spatial_information_gap"]
 
     return metrics
 
 
-def compare_on_dataset(dataset_name, arrow_counts=(3,), n_seeds=3,
-                       modes=("direct", "pca", "adaptive")):
-    """Run full comparison on one dataset across multiple arrow counts."""
+# ── Orchestrator ────────────────────────────────────────────────────────
+
+def compare_on_dataset(dataset_name, backends=None, arrow_counts=None,
+                       n_seeds=3, modes=None, output_path=None,
+                       completed=None, skip_standalone=False,
+                       save_embeddings=False, spatial_cache_dir=None,
+                       backend_params_by_name=None):
+    """Run full comparison on one dataset across multiple backends and arrow counts.
+
+    If arrow_counts is None, uses the optimal single count for the dataset's
+    dimensionality. If arrow_counts is a list, sweeps over all positive counts.
+    The zero-arrow comparison is the standalone spatial baseline, not an AFE run.
+    """
+    if backends is None:
+        backends = ALL_BACKENDS
+    if modes is None:
+        modes = ALL_MODES
+    if completed is None:
+        completed = set()
+    backend_params_by_name = backend_params_by_name or {}
+    package_versions = collect_package_versions()
+    machine_info = collect_machine_info()
+
     loader = DATASETS[dataset_name]
-    X, y = loader()
+    try:
+        X, y = loader()
+    except (FileNotFoundError, ImportError) as e:
+        print(f"\n  SKIPPING {dataset_name}: {e}")
+        return []
+    except (MemoryError, ValueError, RuntimeError) as e:
+        print(f"\n  SKIPPING {dataset_name}: {e}")
+        return []
     labels = y if dataset_name in LABELED_DATASETS else None
     n, d = X.shape
 
+    # Arrow count selection
+    if arrow_counts is not None:
+        ds_arrow_counts = arrow_counts
+    else:
+        ds_arrow_counts = [get_optimal_arrow_count(d)]
+
     print(f"\n{'='*70}")
-    print(f"  {dataset_name}  ({n} x {d})")
+    print(f"  {dataset_name}  ({n} x {d})  arrows: {ds_arrow_counts}")
     print(f"{'='*70}")
 
     all_results = []
+    total_run = 0
+    total_skipped = 0
 
-    # Baseline: PaCMAP 3D (run once, shared across arrow counts)
-    print(f"\n  PaCMAP 3D (baseline)")
-    baseline_metrics = []
-    for seed in range(n_seeds):
-        m = run_pacmap_baseline(X, labels, seed)
-        m["dataset"] = dataset_name
-        all_results.append(m)
-        baseline_metrics.append(m)
+    failed_backends = set()  # Skip entire backend after first ImportError
 
-    mean_bl = {
-        k: np.mean([r[k] for r in baseline_metrics])
-        for k in ["knn_recall_k10", "spearman_dist_corr", "random_triplet_acc",
-                   "reconstruction_mse"]
-    }
-    print(f"    kNN@10: {mean_bl['knn_recall_k10']:.3f}  "
-          f"Spearman: {mean_bl['spearman_dist_corr']:.3f}  "
-          f"Triplet: {mean_bl['random_triplet_acc']:.3f}  "
-          f"Recon MSE: {mean_bl['reconstruction_mse']:.4f}")
+    for backend_name in backends:
+        if backend_name in failed_backends:
+            continue
 
-    # AFE modes x arrow counts
-    for n_arrows in arrow_counts:
-        for mode in modes:
-            print(f"\n  AFE ({mode}, {n_arrows} arrows)")
-            mode_metrics = []
+        backend_params = dict(backend_params_by_name.get(backend_name, {}))
+
+        fixed_spatial_by_seed = {}
+        spatial_cache_info_by_seed = {}
+        for seed in range(n_seeds):
+            try:
+                spatial_t0 = time.time()
+                spatial, cache_path, cache_hit = get_or_compute_spatial_embedding(
+                    X=X,
+                    dataset=dataset_name,
+                    backend=backend_name,
+                    seed=seed,
+                    backend_params=backend_params,
+                    preprocessing_version=_preprocessing_version(dataset_name),
+                    cache_dir=spatial_cache_dir,
+                    compute_fn=lambda b=backend_name, s=seed, p=backend_params: compute_spatial_embedding(
+                        X, b, s, backend_params=p
+                    ),
+                )
+                spatial_elapsed = time.time() - spatial_t0
+                fixed_spatial_by_seed[seed] = spatial
+                spatial_cache_info_by_seed[seed] = (
+                    cache_path, cache_hit, spatial_elapsed
+                )
+            except ImportError as e:
+                print(f"\n  {backend_name.upper()} NOT INSTALLED: {e}")
+                print(f"    Skipping all {backend_name} runs for {dataset_name}")
+                failed_backends.add(backend_name)
+                break
+            except (MemoryError, ValueError, RuntimeError) as e:
+                print(f"\n  {backend_name.upper()} spatial computation FAILED: {e}")
+                failed_backends.add(backend_name)
+                break
+            except Exception as e:
+                print(f"\n  {backend_name.upper()} spatial computation FAILED: {e}")
+                failed_backends.add(backend_name)
+                break
+
+        if backend_name in failed_backends:
+            continue
+
+        # Standalone baseline
+        if not skip_standalone:
+            print(f"\n  {backend_name.upper()} 3D (baseline)")
             for seed in range(n_seeds):
-                m = run_afe(X, labels, mode, n_arrows, seed)
-                m["dataset"] = dataset_name
-                all_results.append(m)
-                mode_metrics.append(m)
+                method_name = f"{backend_name}_3d"
+                key = (dataset_name, method_name, seed)
+                if key in completed:
+                    total_skipped += 1
+                    continue
 
-            mean_m = {
-                k: np.mean([r[k] for r in mode_metrics if k in r])
-                for k in ["knn_recall_k10", "arrow_knn_recall_k10", "spearman_dist_corr",
-                           "random_triplet_acc", "reconstruction_mse", "arrow_info_gain",
-                           "arrow_consistency"]
-            }
-            knn_gain = mean_m["arrow_knn_recall_k10"] - mean_bl["knn_recall_k10"]
-            recon_gain = mean_bl["reconstruction_mse"] - mean_m["reconstruction_mse"]
+                print(f"    seed={seed} ...", end=" ", flush=True)
+                try:
+                    cache_path, cache_hit, spatial_elapsed = spatial_cache_info_by_seed[seed]
+                    m = run_standalone(
+                        X, labels, backend_name, seed,
+                        spatial=fixed_spatial_by_seed[seed],
+                        backend_params=backend_params,
+                        save_embeddings=save_embeddings,
+                        dataset_name=dataset_name,
+                        package_versions=package_versions,
+                        machine_info=machine_info,
+                        spatial_cache_hit=cache_hit,
+                        spatial_cache_path=cache_path,
+                        spatial_compute_seconds=spatial_elapsed,
+                    )
+                    m["dataset"] = dataset_name
+                    all_results.append(m)
+                    if output_path:
+                        append_result(output_path, m)
+                    total_run += 1
+                    print(f"done ({m['time_seconds']:.1f}s, "
+                          f"kNN={m['knn_recall_k10']:.3f})")
+                except ImportError as e:
+                    print(f"NOT INSTALLED: {e}")
+                    print(f"    Skipping all {backend_name} runs for {dataset_name}")
+                    failed_backends.add(backend_name)
+                    break
+                except (MemoryError, ValueError, RuntimeError) as e:
+                    print(f"FAILED: {e}")
 
-            print(f"    kNN@10 (spatial):  {mean_m['knn_recall_k10']:.3f}  "
-                  f"(same backend)")
-            print(f"    kNN@10 (+ arrows): {mean_m['arrow_knn_recall_k10']:.3f}  "
-                  f"({'+'if knn_gain>=0 else ''}{knn_gain:.3f} vs baseline)")
-            print(f"    Recon MSE:         {mean_m['reconstruction_mse']:.4f}  "
-                  f"({'+'if recon_gain>=0 else ''}{recon_gain:.4f} improvement)")
-            print(f"    Arrow info gain:   {mean_m['arrow_info_gain']:.4f}")
-            print(f"    Arrow consistency: {mean_m['arrow_consistency']:.3f}")
+        # AFE-enhanced variants
+        if backend_name in failed_backends:
+            continue
 
+        for n_arrows in ds_arrow_counts:
+            for mode in modes:
+                if backend_name in failed_backends:
+                    break
+                print(f"\n  AFE+{backend_name} ({mode}, {n_arrows} arrows)")
+                for seed in range(n_seeds):
+                    method_name = f"afe_{backend_name}_{mode}_{n_arrows}arr"
+                    key = (dataset_name, method_name, seed)
+                    if key in completed:
+                        total_skipped += 1
+                        continue
+
+                    print(f"    seed={seed} ...", end=" ", flush=True)
+                    try:
+                        cache_path, cache_hit, spatial_elapsed = spatial_cache_info_by_seed[seed]
+                        m = run_afe(
+                            X, labels, backend_name, mode, n_arrows, seed,
+                            spatial=fixed_spatial_by_seed[seed],
+                            backend_params=backend_params,
+                            save_embeddings=save_embeddings,
+                            dataset_name=dataset_name,
+                            package_versions=package_versions,
+                            machine_info=machine_info,
+                            spatial_cache_hit=cache_hit,
+                            spatial_cache_path=cache_path,
+                            spatial_compute_seconds=spatial_elapsed,
+                        )
+                        m["dataset"] = dataset_name
+                        all_results.append(m)
+                        if output_path:
+                            append_result(output_path, m)
+                        total_run += 1
+                        aknn = m.get("arrow_knn_recall_k10", 0)
+                        print(f"done ({m['time_seconds']:.1f}s, "
+                              f"kNN={m['knn_recall_k10']:.3f}, "
+                              f"arrowkNN={aknn:.3f})")
+                    except ImportError as e:
+                        print(f"NOT INSTALLED: {e}")
+                        print(f"    Skipping all {backend_name} runs for {dataset_name}")
+                        failed_backends.add(backend_name)
+                        break
+                    except (MemoryError, ValueError, RuntimeError) as e:
+                        print(f"FAILED: {e}")
+
+    print(f"\n  [{dataset_name}] {total_run} runs, {total_skipped} skipped")
     return all_results
 
 
-def print_summary(all_results):
-    """Print a summary table across all datasets."""
-    print(f"\n\n{'='*70}")
-    print("  SUMMARY")
-    print(f"{'='*70}\n")
+# ── Multiprocessing worker ──────────────────────────────────────────────
 
-    datasets = sorted(set(r["dataset"] for r in all_results))
-    methods = sorted(set(r["method"] for r in all_results))
+def _dataset_worker(task):
+    """Run compare_on_dataset for a single dataset in a worker process.
 
-    # Header
-    header = f"{'Method':<30} {'kNN@10':>8} {'Spearman':>9} {'Recon MSE':>10}"
-    if any("arrow_knn_recall_k10" in r for r in all_results):
-        header += f" {'Arr kNN@10':>11} {'Info Gain':>10}"
-    print(header)
-    print("-" * len(header))
+    Each worker writes to its own temporary JSONL file to avoid
+    cross-process file locking. The main process merges temp files
+    after all workers finish.
+    """
+    ds = task["dataset_name"]
+    worker_output = task["worker_output"]
+    try:
+        results = compare_on_dataset(
+            ds,
+            backends=task["backends"],
+            arrow_counts=task["arrow_counts"],
+            n_seeds=task["n_seeds"],
+            modes=task["modes"],
+            output_path=worker_output,
+            completed=task["completed"],
+            skip_standalone=task["skip_standalone"],
+            save_embeddings=task["save_embeddings"],
+            spatial_cache_dir=task["spatial_cache_dir"],
+        )
+        return {"dataset": ds, "output": worker_output, "error": None}
+    except Exception as e:
+        import traceback
+        err = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+        return {"dataset": ds, "output": worker_output, "error": err}
 
-    for ds in datasets:
-        print(f"\n  [{ds}]")
-        for method in methods:
-            rows = [r for r in all_results if r["dataset"] == ds and r["method"] == method]
-            if not rows:
+
+def _merge_worker_outputs(main_output, worker_outputs):
+    """Append worker temp JSONL files into the main output file."""
+    with open(main_output, "a") as out_f:
+        for path in worker_outputs:
+            if not Path(path).exists():
                 continue
-            knn = np.mean([r["knn_recall_k10"] for r in rows])
-            sp = np.mean([r["spearman_dist_corr"] for r in rows])
-            mse = np.mean([r["reconstruction_mse"] for r in rows])
-            line = f"  {method:<28} {knn:>8.3f} {sp:>9.3f} {mse:>10.4f}"
-
-            if "arrow_knn_recall_k10" in rows[0]:
-                aknn = np.mean([r["arrow_knn_recall_k10"] for r in rows])
-                aig = np.mean([r.get("arrow_info_gain", 0) for r in rows])
-                line += f" {aknn:>11.3f} {aig:>10.4f}"
-
-            print(line)
+            with open(path) as in_f:
+                for line in in_f:
+                    line = line.strip()
+                    if line:
+                        out_f.write(line + "\n")
+            Path(path).unlink(missing_ok=True)
 
 
-def list_datasets():
-    """Print all available datasets grouped by category."""
-    print("\nAvailable datasets:\n")
-    for cat_name, cat_dict in DATASET_CATEGORIES.items():
-        print(f"  [{cat_name}] ({len(cat_dict)} datasets)")
-        for name in sorted(cat_dict.keys()):
-            labeled = " (labeled)" if name in LABELED_DATASETS else ""
-            print(f"    {name}{labeled}")
-        print()
-    print(f"Total: {len(DATASETS)} datasets")
-
+# ── CLI ─────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="AFE vs PaCMAP comparison")
+    parser = argparse.ArgumentParser(
+        description="Compare DR methods: standalone vs AFE-enhanced"
+    )
     parser.add_argument("--datasets", type=str, default=None,
                         help="Comma-separated dataset names")
     parser.add_argument("--category", type=str, default=None,
                         choices=["general", "scrna", "all"],
                         help="Run all datasets in a category")
-    parser.add_argument("--n-arrows", type=str, default="3",
-                        help="Comma-separated arrow counts (e.g., 5,25,50)")
+    parser.add_argument("--backends", type=str,
+                        default=",".join(ALL_BACKENDS),
+                        help=f"Comma-separated backends (default: all)")
+    parser.add_argument("--n-arrows", type=str, default="optimal",
+                        help="Arrow counts: 'optimal' (d-3, one per residual dim), "
+                             "'sweep' (multi-count exploration), or comma-separated (e.g., 5,10,25)")
     parser.add_argument("--n-seeds", type=int, default=3)
     parser.add_argument("--modes", type=str, default="direct,pca,adaptive")
-    parser.add_argument("--output", type=str, default="comparison_results.json")
+    parser.add_argument("--output", type=str, default="comparison_results.jsonl")
+    parser.add_argument("--skip-standalone", action="store_true",
+                        help="Skip standalone baseline runs")
+    parser.add_argument("--skip-significance", action="store_true",
+                        help="Skip significance testing")
+    parser.add_argument("--save-embeddings", action="store_true",
+                        help="Save embeddings to disk for post-hoc metric computation")
+    parser.add_argument("--spatial-cache-dir", type=str,
+                        default=str(Path(__file__).parent / "spatial_embeddings"),
+                        help="Directory for fixed spatial coordinate cache")
+    parser.add_argument("--n-jobs", type=int, default=1,
+                        help="Number of parallel worker processes (default: 1, sequential). "
+                             "Use -1 for all available CPU cores.")
     parser.add_argument("--list-datasets", action="store_true",
                         help="Print available datasets and exit")
     args = parser.parse_args()
@@ -272,35 +489,108 @@ def main():
     else:
         datasets = ["swiss_roll", "hierarchical_gaussians"]
 
-    modes = tuple(m.strip() for m in args.modes.split(","))
-    arrow_counts = tuple(int(x.strip()) for x in args.n_arrows.split(","))
+    backends = [b.strip() for b in args.backends.split(",")]
+    modes = [m.strip() for m in args.modes.split(",")]
+    arrow_counts = None  # None = optimal (d-3 per dataset)
+    if args.n_arrows == "sweep":
+        arrow_counts = "sweep"
+    elif args.n_arrows not in ("optimal", "auto"):
+        arrow_counts = [int(x.strip()) for x in args.n_arrows.split(",")]
 
-    all_results = []
-    for ds in datasets:
+    # Sort datasets fastest-first
+    datasets = sort_datasets_by_cost(datasets)
+
+    # Resolve n_jobs
+    n_jobs = args.n_jobs
+    if n_jobs == -1:
+        n_jobs = multiprocessing.cpu_count()
+    n_jobs = max(1, n_jobs)
+
+    # Load already-completed runs for resumability
+    completed = load_completed(args.output)
+    if completed:
+        print(f"Resuming: {len(completed)} runs already completed in {args.output}")
+
+    # Prepare worker tasks
+    worker_dir = Path(args.output).parent / ".worker_tmp"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+
+    tasks = []
+    for idx, ds in enumerate(datasets):
         if ds not in DATASETS:
             print(f"Warning: unknown dataset '{ds}', skipping")
             continue
-        results = compare_on_dataset(ds, arrow_counts=arrow_counts,
-                                     n_seeds=args.n_seeds, modes=modes)
-        all_results.extend(results)
+        if arrow_counts == "sweep":
+            X_tmp, _ = DATASETS[ds]()
+            ds_arrows = get_arrow_counts(X_tmp.shape[1])
+            del X_tmp
+        elif arrow_counts is None:
+            ds_arrows = None
+        else:
+            ds_arrows = arrow_counts
+
+        worker_output = str(worker_dir / f"worker_{idx}_{ds}.jsonl")
+        tasks.append({
+            "dataset_name": ds,
+            "backends": backends,
+            "arrow_counts": ds_arrows,
+            "n_seeds": args.n_seeds,
+            "modes": modes,
+            "worker_output": worker_output,
+            "completed": completed,
+            "skip_standalone": args.skip_standalone,
+            "save_embeddings": args.save_embeddings,
+            "spatial_cache_dir": args.spatial_cache_dir,
+        })
+
+    if n_jobs == 1:
+        print(f"\nRunning benchmark sequentially on {len(tasks)} datasets...")
+        for task in tasks:
+            res = _dataset_worker(task)
+            if res["error"]:
+                print(f"\n  ERROR in {res['dataset']}: {res['error']}")
+            _merge_worker_outputs(args.output, [res["output"]])
+    else:
+        print(f"\nRunning benchmark with {n_jobs} parallel workers on {len(tasks)} datasets...")
+        with multiprocessing.Pool(n_jobs) as pool:
+            worker_results = pool.map(_dataset_worker, tasks)
+
+        errors = [r for r in worker_results if r["error"]]
+        if errors:
+            print(f"\n{'='*70}")
+            print(f"  ERRORS ({len(errors)} datasets failed)")
+            print(f"{'='*70}")
+            for r in errors:
+                print(f"\n  [{r['dataset']}]\n  {r['error']}")
+
+        print(f"\nMerging {len(worker_results)} worker outputs into {args.output}...")
+        _merge_worker_outputs(args.output, [r["output"] for r in worker_results])
+
+    # Clean up worker temp dir
+    if worker_dir.exists():
+        try:
+            worker_dir.rmdir()
+        except OSError:
+            pass
+
+    # Load all results for summary/significance
+    all_results = load_all_results(args.output)
 
     print_summary(all_results)
 
-    # Save
-    def _convert(obj):
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return obj
+    # Significance testing
+    if not args.skip_significance and len(all_results) > 0:
+        print("\nComputing significance tests...")
+        sig_results = compute_significance(all_results)
+        aggregated = aggregate_significance(sig_results)
 
-    serializable = [{k: _convert(v) for k, v in row.items()} for row in all_results]
-    output_path = Path(args.output)
-    with open(output_path, "w") as f:
-        json.dump(serializable, f, indent=2)
-    print(f"\nResults saved to {output_path}")
+        for r in sig_results:
+            append_result(args.output, r)
+
+        print_significance_summary(sig_results, aggregated)
+
+    total = len([r for r in all_results if r.get("type") != "significance"])
+    print(f"\nBenchmark complete: {total} total runs in {args.output}")
 
 
 if __name__ == "__main__":

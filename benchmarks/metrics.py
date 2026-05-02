@@ -1,190 +1,152 @@
-"""Evaluation metrics for AFE: standard DR metrics + AFE-specific.
+"""Shared metric computation for benchmark runners.
 
-Standard metrics adapted from continuous-pacmap-public/benchmarks/metrics.py.
+Eliminates duplication between standalone (baseline) and AFE-enhanced runs.
 """
 
 import numpy as np
-from sklearn.neighbors import NearestNeighbors
-from scipy.stats import spearmanr
-from scipy.spatial.distance import pdist
+
+from afe.backends import get_backend
+from afe.evaluation import (
+    knn_recall,
+    knn_classification_metrics,
+    flattened_afe_representation,
+    spearman_distance_correlation,
+    random_triplet_accuracy,
+    centroid_triplet_accuracy,
+    reconstruction_error,
+    arrow_spatial_information_gain,
+    arrow_knn_recall,
+    recon_knn_recall,
+    arrow_consistency,
+    trustworthiness,
+    continuity,
+    silhouette,
+    normalized_stress,
+)
 
 
-# ── Standard DR Metrics ──────────────────────────────────────────────────
-
-def knn_recall(X_high, X_low, k=10):
-    """Fraction of true k-NN preserved in embedding."""
-    nn_high = NearestNeighbors(n_neighbors=k + 1, algorithm="auto").fit(X_high)
-    nn_low = NearestNeighbors(n_neighbors=k + 1, algorithm="auto").fit(X_low)
-
-    _, idx_high = nn_high.kneighbors(X_high)
-    _, idx_low = nn_low.kneighbors(X_low)
-
-    idx_high = idx_high[:, 1:]
-    idx_low = idx_low[:, 1:]
-
-    recalls = []
-    for i in range(len(X_high)):
-        overlap = len(set(idx_high[i]) & set(idx_low[i]))
-        recalls.append(overlap / k)
-    return np.mean(recalls)
+def compute_spatial_embedding(X, backend_name, seed, backend_params=None):
+    """Compute one fixed spatial embedding for a dataset/backend/seed."""
+    backend = get_backend(backend_name, backend_kwargs=backend_params, random_state=seed)
+    return backend.fit_transform(X)
 
 
-def spearman_distance_correlation(X_high, X_low, n_sample=5000):
-    """Spearman rank correlation between pairwise distances."""
-    n = len(X_high)
-    if n > n_sample:
-        rng = np.random.RandomState(42)
-        idx = rng.choice(n, n_sample, replace=False)
-        X_high = X_high[idx]
-        X_low = X_low[idx]
-
-    d_high = pdist(X_high)
-    d_low = pdist(X_low)
-    corr, _ = spearmanr(d_high, d_low)
-    return corr
+def _linear_reconstruct(X, Y):
+    """Reconstruct X from Y via linear regression. Returns (X_recon, wb)."""
+    n = len(Y)
+    Y_aug = np.column_stack([Y, np.ones(n)])
+    wb = np.linalg.lstsq(Y_aug, X, rcond=None)[0]
+    X_recon = Y_aug @ wb
+    return X_recon, wb
 
 
-def random_triplet_accuracy(X_high, X_low, n_triplets=50000, random_state=42):
-    """Fraction of random triplets with preserved distance ordering."""
-    n = len(X_high)
-    rng = np.random.RandomState(random_state)
-
-    idx = np.empty((n_triplets, 3), dtype=int)
-    for col in range(3):
-        idx[:, col] = rng.randint(0, n, size=n_triplets)
-    bad = (idx[:, 0] == idx[:, 1]) | (idx[:, 0] == idx[:, 2]) | (idx[:, 1] == idx[:, 2])
-    while bad.any():
-        n_bad = bad.sum()
-        for col in range(3):
-            idx[bad, col] = rng.randint(0, n, size=n_bad)
-        bad = (idx[:, 0] == idx[:, 1]) | (idx[:, 0] == idx[:, 2]) | (idx[:, 1] == idx[:, 2])
-
-    i, j, k = idx[:, 0], idx[:, 1], idx[:, 2]
-
-    d_high_ij = np.linalg.norm(X_high[i] - X_high[j], axis=1)
-    d_high_ik = np.linalg.norm(X_high[i] - X_high[k], axis=1)
-    d_low_ij = np.linalg.norm(X_low[i] - X_low[j], axis=1)
-    d_low_ik = np.linalg.norm(X_low[i] - X_low[k], axis=1)
-
-    preserved = (d_high_ij < d_high_ik) == (d_low_ij < d_low_ik)
-    non_tie = d_high_ij != d_high_ik
-    return float(np.mean(preserved[non_tie]))
-
-
-def centroid_triplet_accuracy(X_high, X_low, labels):
-    """Fraction of centroid triplets with preserved distance ordering."""
-    if labels is None:
-        return None
-
-    from scipy.spatial.distance import cdist
-
-    classes = np.unique(labels)
-    n_classes = len(classes)
-    if n_classes < 3:
-        return None
-
-    centroids_high = np.array([X_high[labels == c].mean(axis=0) for c in classes])
-    centroids_low = np.array([X_low[labels == c].mean(axis=0) for c in classes])
-
-    d_high = cdist(centroids_high, centroids_high, metric='euclidean')
-    d_low = cdist(centroids_low, centroids_low, metric='euclidean')
-
-    preserved = 0
-    total = 0
-    for i in range(n_classes):
-        for j in range(n_classes):
-            for k in range(j + 1, n_classes):
-                if j == i or k == i:
-                    continue
-                if d_high[i, j] == d_high[i, k]:
-                    continue
-                same_order = (d_high[i, j] < d_high[i, k]) == (d_low[i, j] < d_low[i, k])
-                preserved += int(same_order)
-                total += 1
-
-    return float(preserved / total) if total > 0 else None
-
-
-# ── AFE-Specific Metrics ─────────────────────────────────────────────────
-
-def reconstruction_error(X_high, X_reconstructed, metric='mse'):
-    """Reconstruction error from spatial + arrows back to HD.
+def _compute_standard_metrics(X, Y, labels=None, seed=0):
+    """Compute standard DR metrics shared by standalone and AFE runs.
 
     Parameters
     ----------
-    metric : {'mse', 'cosine', 'relative'}
+    X : ndarray (n, d)
+        Original high-dimensional data.
+    Y : ndarray (n, 3)
+        3D spatial embedding.
+    labels : ndarray (n,), optional
+        Per-point labels for classification/triplet metrics.
+    seed : int
+        Random seed for reproducible classification split.
+
+    Returns
+    -------
+    metrics : dict
+        Dictionary with all standard DR metrics.
     """
-    if metric == 'mse':
-        return float(np.mean((X_high - X_reconstructed) ** 2))
-    elif metric == 'cosine':
-        # Mean cosine distance
-        norms_h = np.linalg.norm(X_high, axis=1, keepdims=True)
-        norms_r = np.linalg.norm(X_reconstructed, axis=1, keepdims=True)
-        norms_h = np.where(norms_h == 0, 1.0, norms_h)
-        norms_r = np.where(norms_r == 0, 1.0, norms_r)
-        cos_sim = np.sum(X_high / norms_h * X_reconstructed / norms_r, axis=1)
-        return float(1.0 - np.mean(cos_sim))
-    elif metric == 'relative':
-        norms = np.linalg.norm(X_high, axis=1)
-        norms = np.where(norms == 0, 1.0, norms)
-        return float(np.mean(np.linalg.norm(X_high - X_reconstructed, axis=1) / norms))
-    else:
-        raise ValueError(f"Unknown metric: {metric}")
+    metrics = {
+        "knn_recall_k10": knn_recall(X, Y, k=10),
+        "knn_recall_k50": knn_recall(X, Y, k=50),
+        "spearman_dist_corr": spearman_distance_correlation(X, Y),
+        "random_triplet_acc": random_triplet_accuracy(X, Y),
+        "trustworthiness_k10": trustworthiness(X, Y, k=10),
+        "continuity_k10": continuity(X, Y, k=10),
+        "normalized_stress": normalized_stress(X, Y),
+    }
+
+    # Reconstruction via linear regression
+    X_recon, _ = _linear_reconstruct(X, Y)
+    metrics["reconstruction_mse"] = reconstruction_error(X, X_recon, metric='mse')
+    metrics["reconstruction_cosine"] = reconstruction_error(X, X_recon, metric='cosine')
+
+    # Label-dependent metrics
+    if labels is not None:
+        ct = centroid_triplet_accuracy(X, Y, labels)
+        if ct is not None:
+            metrics["centroid_triplet_acc"] = ct
+        sil = silhouette(Y, labels)
+        if sil is not None:
+            metrics["silhouette_score"] = sil
+        clf_hd = knn_classification_metrics(X, labels, n_neighbors=10, random_state=seed)
+        metrics["knn_class_acc_hd"] = clf_hd["accuracy"]
+        metrics["knn_class_f1_hd"] = clf_hd["macro_f1"]
+        clf_spatial = knn_classification_metrics(Y, labels, n_neighbors=10, random_state=seed)
+        metrics["knn_class_acc_spatial"] = clf_spatial["accuracy"]
+        metrics["knn_class_f1_spatial"] = clf_spatial["macro_f1"]
+
+    return metrics, X_recon
 
 
-def arrow_information_gain(X_high, X_spatial_recon, X_full_recon):
-    """How much information arrows add beyond spatial alone.
+def _compute_afe_metrics(X, afe, spatial, arrows, labels=None, seed=0):
+    """Compute all metrics for an AFE-enhanced run.
 
-    Computes improvement in correlation between original and reconstructed.
+    Calls _compute_standard_metrics for the spatial baseline, then adds
+    AFE-specific metrics (arrow KNN, reconstruction, classification on
+    flat AFE and reconstructed HD).
+
+    Parameters
+    ----------
+    X : ndarray (n, d)
+        Original high-dimensional data.
+    afe : ArrowFieldEmbedding
+        Fitted AFE instance.
+    spatial : ndarray (n, 3)
+        3D spatial positions.
+    arrows : ndarray (n, k, 3)
+        Arrow field.
+    labels : ndarray (n,), optional
+        Per-point labels.
+    seed : int
+        Random seed for classification split.
+
+    Returns
+    -------
+    metrics : dict
+        Complete metric dictionary for the AFE run.
     """
-    corr_spatial = np.corrcoef(X_high.ravel(), X_spatial_recon.ravel())[0, 1]
-    corr_full = np.corrcoef(X_high.ravel(), X_full_recon.ravel())[0, 1]
-    return float(corr_full - corr_spatial)
+    metrics, _ = _compute_standard_metrics(X, spatial, labels=labels, seed=seed)
 
+    # AFE-enhanced metrics
+    metrics["arrow_knn_recall_k10"] = arrow_knn_recall(X, spatial, arrows, k=10)
+    metrics["arrow_knn_recall_k50"] = arrow_knn_recall(X, spatial, arrows, k=50)
+    metrics["arrow_consistency"] = arrow_consistency(arrows, X, k=10)
 
-def arrow_knn_recall(X_high, spatial, arrows, k=10):
-    """KNN recall using combined spatial + arrow representation.
+    # Reconstruction from AFE
+    X_recon = afe.reconstruct()
+    metrics["reconstruction_mse"] = reconstruction_error(X, X_recon, metric='mse')
+    metrics["reconstruction_cosine"] = reconstruction_error(X, X_recon, metric='cosine')
+    metrics["recon_knn_recall_k10"] = recon_knn_recall(X, X_recon, k=10)
+    metrics["recon_knn_recall_k50"] = recon_knn_recall(X, X_recon, k=50)
 
-    Builds a combined feature vector [spatial, flattened_arrows] and
-    measures kNN recall against HD space.
-    """
-    n = len(spatial)
-    arrows_flat = arrows.reshape(n, -1)
-    # Normalize both to unit variance before combining
-    spatial_std = np.std(spatial, axis=0, keepdims=True)
-    spatial_std = np.where(spatial_std == 0, 1.0, spatial_std)
-    arrows_std = np.std(arrows_flat, axis=0, keepdims=True)
-    arrows_std = np.where(arrows_std == 0, 1.0, arrows_std)
+    # Spatial-only reconstruction for spatial information gain
+    X_spatial_recon, _ = _linear_reconstruct(X, spatial)
+    metrics["arrow_spatial_information_gain"] = arrow_spatial_information_gain(
+        X, X_spatial_recon, X_recon
+    )
 
-    combined = np.column_stack([
-        spatial / spatial_std,
-        arrows_flat / arrows_std,
-    ])
-    return knn_recall(X_high, combined, k=k)
+    # Extended label-dependent metrics
+    if labels is not None:
+        afe_flat = flattened_afe_representation(spatial, arrows)
+        clf_flat = knn_classification_metrics(afe_flat, labels, n_neighbors=10, random_state=seed)
+        metrics["knn_class_acc_flat"] = clf_flat["accuracy"]
+        metrics["knn_class_f1_flat"] = clf_flat["macro_f1"]
+        clf_recon = knn_classification_metrics(X_recon, labels, n_neighbors=10, random_state=seed)
+        metrics["knn_class_acc_recon"] = clf_recon["accuracy"]
+        metrics["knn_class_f1_recon"] = clf_recon["macro_f1"]
 
-
-def arrow_consistency(arrows, X_high, k=10):
-    """Do nearby points in HD space have similar arrow orientations?
-
-    For each point's k nearest neighbors in HD, compute the mean
-    cosine similarity of their arrow configurations.
-    """
-    nn = NearestNeighbors(n_neighbors=k + 1, algorithm="auto").fit(X_high)
-    _, idx = nn.kneighbors(X_high)
-    idx = idx[:, 1:]  # exclude self
-
-    n = len(arrows)
-    arrows_flat = arrows.reshape(n, -1)
-
-    # Normalize arrow vectors
-    norms = np.linalg.norm(arrows_flat, axis=1, keepdims=True)
-    norms = np.where(norms == 0, 1.0, norms)
-    arrows_normed = arrows_flat / norms
-
-    consistencies = []
-    for i in range(n):
-        neighbors = idx[i]
-        cos_sims = arrows_normed[neighbors] @ arrows_normed[i]
-        consistencies.append(np.mean(cos_sims))
-
-    return float(np.mean(consistencies))
+    return metrics
