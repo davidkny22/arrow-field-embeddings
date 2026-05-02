@@ -56,6 +56,7 @@ class TestWithPaCMAPBackend:
     """Test that PaCMAP backend works end-to-end (requires pacmap)."""
 
     def test_pacmap_swiss_roll(self, swiss_roll_data):
+        pytest.importorskip("pacmap", exc_type=ImportError)
         X, t = swiss_roll_data
         afe = ArrowFieldEmbedding(
             n_arrows=1,
@@ -69,6 +70,7 @@ class TestWithPaCMAPBackend:
 
     def test_pacmap_high_dim(self):
         """Test on higher-dimensional synthetic data."""
+        pytest.importorskip("pacmap", exc_type=ImportError)
         rng = np.random.RandomState(42)
         X = rng.randn(300, 50).astype(np.float32)
 
@@ -88,7 +90,7 @@ class TestMetricsIntegration:
     """Test metrics work with AFE outputs."""
 
     def test_standard_metrics(self, synthetic_data, manual_embedding):
-        from benchmarks.metrics import knn_recall, spearman_distance_correlation
+        from afe.evaluation import knn_recall, spearman_distance_correlation
 
         X, _ = synthetic_data
         afe = ArrowFieldEmbedding(
@@ -102,7 +104,7 @@ class TestMetricsIntegration:
         assert -1 <= spearman <= 1
 
     def test_afe_metrics(self, synthetic_data, manual_embedding):
-        from benchmarks.metrics import (
+        from afe.evaluation import (
             reconstruction_error,
             arrow_knn_recall,
             arrow_consistency,

@@ -70,3 +70,6 @@ class ArrowNormalizer:
 
     def fit_transform(self, arrows: np.ndarray) -> np.ndarray:
         return self.fit(arrows).transform(arrows)
+
+
+__all__ = ["ArrowNormalizer"]

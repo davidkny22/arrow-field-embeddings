@@ -57,7 +57,7 @@ class TestPlotAfe:
 class TestPlotInfoGap:
     def test_returns_figure(self, synthetic_data, manual_embedding):
         from afe import ArrowFieldEmbedding
-        from afe.visualization import plot_info_gap
+        from afe.visualization import plot_spatial_information_gap
 
         X, _ = synthetic_data
         afe = ArrowFieldEmbedding(
@@ -68,6 +68,6 @@ class TestPlotInfoGap:
         afe.fit(X)
         gap = afe.get_gap_report()
 
-        fig = plot_info_gap(gap)
+        fig = plot_spatial_information_gap(gap)
         assert fig is not None
         assert hasattr(fig, "data")

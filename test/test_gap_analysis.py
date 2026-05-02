@@ -1,11 +1,11 @@
-"""Tests for information gap analysis."""
+"""Tests for spatial information gap analysis."""
 
 import numpy as np
 import pytest
-from afe.gap_analysis import InformationGapAnalyzer
+from afe.gap_analysis import SpatialInformationGapAnalyzer
 
 
-class TestInformationGapAnalyzer:
+class TestSpatialInformationGapAnalyzer:
     def test_basic_analysis(self):
         rng = np.random.RandomState(42)
         n = 100
@@ -14,7 +14,7 @@ class TestInformationGapAnalyzer:
         # Last 3 dims = independent noise (not captured)
         X_high = np.column_stack([X_3d, rng.randn(n, 3)]).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer(correlation_threshold=0.3)
+        analyzer = SpatialInformationGapAnalyzer(correlation_threshold=0.3)
         report = analyzer.analyze(X_high, X_3d)
 
         assert "correlation_matrix" in report
@@ -29,7 +29,7 @@ class TestInformationGapAnalyzer:
         # HD data: first 3 dims = exact copies of spatial
         X_high = np.column_stack([X_3d, rng.randn(n, 5) * 0.01]).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer(correlation_threshold=0.3)
+        analyzer = SpatialInformationGapAnalyzer(correlation_threshold=0.3)
         report = analyzer.analyze(X_high, X_3d)
 
         # First 3 dims should be captured
@@ -44,7 +44,7 @@ class TestInformationGapAnalyzer:
         X_3d = rng.randn(n, 3).astype(np.float32)
         X_high = np.column_stack([X_3d, rng.randn(n, 4)]).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer(correlation_threshold=0.3)
+        analyzer = SpatialInformationGapAnalyzer(correlation_threshold=0.3)
         report = analyzer.analyze(X_high, X_3d)
 
         # Last 4 dims should be residual
@@ -58,21 +58,21 @@ class TestInformationGapAnalyzer:
         X_3d = rng.randn(n, 3).astype(np.float32)
         X_high = np.column_stack([X_3d, rng.randn(n, 5)]).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer(correlation_threshold=0.3)
+        analyzer = SpatialInformationGapAnalyzer(correlation_threshold=0.3)
         report = analyzer.analyze(X_high, X_3d)
 
         n_residual = len(report["residual_dims"])
         assert report["residual_data"].shape == (n, n_residual)
 
-    def test_gap_score_range(self):
+    def test_spatial_information_gap_range(self):
         rng = np.random.RandomState(42)
         n = 100
         X_3d = rng.randn(n, 3).astype(np.float32)
         X_high = rng.randn(n, 10).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer()
+        analyzer = SpatialInformationGapAnalyzer()
         report = analyzer.analyze(X_high, X_3d)
-        assert 0.0 <= report["information_gap_score"] <= 1.0
+        assert 0.0 <= report["spatial_information_gap"] <= 1.0
 
     def test_all_captured_edge_case(self):
         """If all dims correlate with spatial, no residuals."""
@@ -82,7 +82,7 @@ class TestInformationGapAnalyzer:
         # All dims are linear combos of spatial
         X_high = X_3d @ rng.randn(3, 5).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer(correlation_threshold=0.3)
+        analyzer = SpatialInformationGapAnalyzer(correlation_threshold=0.3)
         report = analyzer.analyze(X_high, X_3d)
         assert len(report["residual_dims"]) == 0
         assert report["residual_data"].shape[1] == 0
@@ -98,7 +98,7 @@ class TestInformationGapAnalyzer:
             rng.randn(n, 2),
         ]).astype(np.float32)
 
-        analyzer = InformationGapAnalyzer()
+        analyzer = SpatialInformationGapAnalyzer()
         report = analyzer.analyze(X_high, X_3d)
         assert report["correlation_matrix"].shape == (6, 3)
         # Should not contain NaN

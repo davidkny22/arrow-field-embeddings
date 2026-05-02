@@ -1,13 +1,22 @@
-"""Export AFE results to viewer-compatible JSON format."""
+"""Export AFE results to the viewer JSON format."""
 
 import json
 import gzip
+import logging
 import numpy as np
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
-from sklearn.neighbors import NearestNeighbors
-from sklearn.cluster import KMeans
+from .attribution import arrow_dim_labels, get_arrow_attributions
+from .evaluation import (
+    knn_recall,
+    spearman_distance_correlation,
+    reconstruction_error as recon_err_metric,
+    arrow_knn_recall,
+    arrow_spatial_information_gain,
+)
+
+_logger = logging.getLogger(__name__)
 
 
 def _compute_clusters(labels: np.ndarray, positions: np.ndarray):
@@ -48,65 +57,6 @@ def _compute_per_point_recon_error(X_original, X_reconstructed):
     return (diff ** 2).mean(axis=1)
 
 
-def _build_arrow_dim_labels(afe, feature_names: Optional[list] = None) -> list:
-    """Build per-arrow dimension labels from the encoder mapping.
-
-    Returns a list of lists: arrow_dim_labels[i] = [dim_name, ...] for arrow i.
-    """
-    encoder = afe._encoder
-    gap_report = afe._gap_report
-    residual_dims = gap_report.get("residual_dims", [])
-    n_arrows = afe.n_arrows
-
-    def dim_name(idx: int) -> str:
-        if feature_names and idx < len(feature_names):
-            return str(feature_names[idx])
-        return f"dim_{idx}"
-
-    labels = []
-    mode = afe.encoding_mode
-
-    if mode == "direct":
-        # Arrow a maps to residual dims a*3, a*3+1, a*3+2
-        for a in range(n_arrows):
-            dims = []
-            for c in range(3):
-                d = a * 3 + c
-                if d < len(residual_dims):
-                    dims.append(dim_name(residual_dims[d]))
-            labels.append(dims if dims else [f"arrow_{a}"])
-
-    elif mode == "pca":
-        # Each arrow is a principal component
-        for a in range(n_arrows):
-            if hasattr(encoder, '_pca') and encoder._pca is not None:
-                explained = encoder._pca.explained_variance_ratio_
-                if a < len(explained):
-                    labels.append([f"PC{a+1} ({explained[a]:.1%} var)"])
-                else:
-                    labels.append([f"PC{a+1} (empty)"])
-            else:
-                labels.append([f"PC{a+1}"])
-
-    elif mode == "adaptive":
-        # Each arrow maps to a group of residual dims
-        groups = getattr(encoder, '_groups', None)
-        if groups:
-            for a in range(n_arrows):
-                if a < len(groups):
-                    dims = [dim_name(residual_dims[d]) for d in groups[a]
-                            if d < len(residual_dims)]
-                    labels.append(dims if dims else [f"group_{a}"])
-                else:
-                    labels.append([f"group_{a} (empty)"])
-        else:
-            labels = [[f"arrow_{a}"] for a in range(n_arrows)]
-    else:
-        labels = [[f"arrow_{a}"] for a in range(n_arrows)]
-
-    return labels
-
-
 def export_for_viewer(
     afe,
     X: np.ndarray,
@@ -118,7 +68,7 @@ def export_for_viewer(
     compress: bool = True,
     compute_metrics: bool = True,
 ):
-    """Export a fitted ArrowFieldEmbedding to viewer-compatible JSON.
+    """Export a fitted ArrowFieldEmbedding to viewer JSON.
 
     Parameters
     ----------
@@ -170,71 +120,57 @@ def export_for_viewer(
         if c["id"] < len(label_names_list):
             c["label"] = label_names_list[c["id"]]
 
-    # Reconstruction error
+    # Compute reconstructions once and reuse
+    X_recon = None
+    X_spatial_recon = None
     recon_error = None
     recon_error_spatial = None
-    try:
-        X_recon = afe.reconstruct()
-        recon_error = _compute_per_point_recon_error(X, X_recon).tolist()
 
-        # Spatial-only reconstruction: use reconstructor with zero arrows
-        if hasattr(afe, '_reconstructor') and afe._reconstructor is not None:
-            zero_arrows = np.zeros_like(arrows)
-            X_spatial_recon = afe._reconstructor.reconstruct(spatial, zero_arrows)
-            recon_error_spatial = _compute_per_point_recon_error(
-                X, X_spatial_recon
-            ).tolist()
-    except Exception:
-        pass
+    if compute_metrics:
+        try:
+            X_recon = afe.reconstruct()
+            recon_error = _compute_per_point_recon_error(X, X_recon).tolist()
+
+            if hasattr(afe, '_reconstructor') and afe._reconstructor is not None:
+                zero_arrows = np.zeros_like(arrows)
+                X_spatial_recon = afe._reconstructor.reconstruct(spatial, zero_arrows)
+                recon_error_spatial = _compute_per_point_recon_error(
+                    X, X_spatial_recon
+                ).tolist()
+        except (ValueError, RuntimeError, AttributeError) as e:
+            _logger.warning("Reconstruction failed during export: %s", e)
 
     # Metrics
     metrics = {
         "knn_recall_k10": 0.0,
         "arrow_knn_recall_k10": 0.0,
         "reconstruction_mse": 0.0,
-        "arrow_info_gain": 0.0,
+        "arrow_spatial_information_gain": 0.0,
         "spearman_dist_corr": 0.0,
     }
 
     if compute_metrics:
         try:
-            from benchmarks.metrics import (
-                knn_recall,
-                spearman_distance_correlation,
-                reconstruction_error as recon_err_metric,
-                arrow_knn_recall,
-                arrow_information_gain,
-            )
-
             metrics["knn_recall_k10"] = float(knn_recall(X, spatial, k=10))
             metrics["spearman_dist_corr"] = float(
                 spearman_distance_correlation(X, spatial)
             )
 
-            X_recon_full = afe.reconstruct()
-            metrics["reconstruction_mse"] = float(
-                recon_err_metric(X, X_recon_full, metric="mse")
-            )
+            if X_recon is not None:
+                metrics["reconstruction_mse"] = float(
+                    recon_err_metric(X, X_recon, metric="mse")
+                )
 
             metrics["arrow_knn_recall_k10"] = float(
                 arrow_knn_recall(X, spatial, arrows, k=10)
             )
 
-            # Spatial-only reconstruction for info gain
-            try:
-                zero_arr = np.zeros_like(arrows)
-                X_spatial_recon = afe._reconstructor.reconstruct(
-                    spatial, zero_arr
+            if X_recon is not None and X_spatial_recon is not None:
+                metrics["arrow_spatial_information_gain"] = float(
+                    arrow_spatial_information_gain(X, X_spatial_recon, X_recon)
                 )
-                metrics["arrow_info_gain"] = float(
-                    arrow_information_gain(X, X_spatial_recon, X_recon_full)
-                )
-            except Exception:
-                pass
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"Warning: metric computation failed: {e}")
+        except (ValueError, RuntimeError) as e:
+            _logger.warning("Metric computation failed: %s", e)
 
     # Build the dataset object
     dataset = {
@@ -250,14 +186,15 @@ def export_for_viewer(
         "label_names": label_names_list,
         "clusters": clusters,
         "gap_report": {
-            "information_gap_score": float(
-                gap_report.get("information_gap_score", 0)
+            "spatial_information_gap": float(
+                gap_report.get("spatial_information_gap", 0)
             ),
             "n_residual_dims": len(gap_report.get("residual_dims", [])),
             "n_captured_dims": len(gap_report.get("captured_dims", [])),
         },
         "metrics": {k: _safe_float(v) for k, v in metrics.items()},
-        "arrow_dim_labels": _build_arrow_dim_labels(afe, feature_names),
+        "arrow_dim_labels": arrow_dim_labels(afe, feature_names),
+        "arrow_attributions": get_arrow_attributions(afe, feature_names),
     }
 
     if recon_error is not None:
@@ -281,5 +218,14 @@ def export_for_viewer(
             f.write(json_bytes)
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
-    print(f"Exported {n_points} points × {n_arrows} arrows to {out_path} ({size_mb:.1f} MB)")
+    _logger.info(
+        "Exported %d points × %d arrows to %s (%.1f MB)",
+        n_points,
+        n_arrows,
+        out_path,
+        size_mb,
+    )
     return out_path
+
+
+__all__ = ["export_for_viewer"]

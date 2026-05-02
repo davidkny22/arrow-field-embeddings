@@ -156,8 +156,8 @@ def plot_afe(
     return fig
 
 
-def plot_info_gap(gap_report: dict) -> "go.Figure":
-    """Visualize the information gap analysis as a heatmap."""
+def plot_spatial_information_gap(gap_report: dict) -> "go.Figure":
+    """Visualize spatial information gap analysis as a correlation heatmap."""
     if not _HAS_PLOTLY:
         raise ImportError("plotly is required for visualization. pip install plotly")
 
@@ -172,8 +172,11 @@ def plot_info_gap(gap_report: dict) -> "go.Figure":
         )
     )
     fig.update_layout(
-        title="Information Gap: |Correlation| of HD Dims with Spatial Coords",
+        title="Spatial Information Gap: |Correlation| of HD Dims with Spatial Coords",
         xaxis_title="Original Dimension",
         yaxis_title="Spatial Coordinate",
     )
     return fig
+
+
+__all__ = ["plot_afe", "plot_spatial_information_gap"]

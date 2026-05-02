@@ -1,11 +1,14 @@
 """Arrow encoding modes: how residual dimensions map to arrows."""
 
+import logging
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Optional
 from sklearn.decomposition import PCA
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.linalg import eigh
+
+_logger = logging.getLogger(__name__)
 
 
 class ArrowEncoder(ABC):
@@ -57,9 +60,11 @@ class DirectMappingEncoder(ArrowEncoder):
         self._n_mapped = min(n_arrows * 3, self._n_residual)
 
         if self.verbose:
-            print(
-                f"DirectMapping: {self._n_residual} residual dims -> "
-                f"{self._n_arrows} arrows ({self._n_mapped} dims mapped)"
+            _logger.info(
+                "DirectMapping: %d residual dims -> %d arrows (%d dims mapped)",
+                self._n_residual,
+                self._n_arrows,
+                self._n_mapped,
             )
         return self
 
@@ -114,7 +119,7 @@ class PCAResidualEncoder(ArrowEncoder):
             self._pca = None
             self._loading_angles = np.empty((0, 2), dtype=np.float32)
             if self.verbose:
-                print("PCAResidual: 0 residual dims, arrows will be zero")
+                _logger.info("PCAResidual: 0 residual dims, arrows will be zero")
             return self
 
         n_components = min(n_arrows, self._n_residual)
@@ -137,9 +142,11 @@ class PCAResidualEncoder(ArrowEncoder):
         if self.verbose:
             explained = self._pca.explained_variance_ratio_
             total = np.sum(explained)
-            print(
-                f"PCAResidual: {self._n_residual} residual dims -> "
-                f"{n_components} PCs ({total:.1%} variance explained)"
+            _logger.info(
+                "PCAResidual: %d residual dims -> %d PCs (%.1f%% variance explained)",
+                self._n_residual,
+                n_components,
+                total * 100,
             )
         return self
 
@@ -263,9 +270,11 @@ class AdaptiveGroupingEncoder(ArrowEncoder):
 
         if self.verbose:
             group_sizes = [len(g) for g in groups]
-            print(
-                f"AdaptiveGrouping: {self._n_residual} residual dims -> "
-                f"{len(groups)} groups (sizes: {group_sizes})"
+            _logger.info(
+                "AdaptiveGrouping: %d residual dims -> %d groups (sizes: %s)",
+                self._n_residual,
+                len(groups),
+                group_sizes,
             )
         return self
 
@@ -344,8 +353,11 @@ class AdaptiveGroupingEncoder(ArrowEncoder):
         n_groups = len(gaps) + 1
 
         if self.verbose:
-            print(f"  Eigenvalue gaps: {len(gaps)} detected "
-                  f"(threshold={self.eigenvalue_gap_threshold})")
+            _logger.info(
+                "  Eigenvalue gaps: %d detected (threshold=%.2f)",
+                len(gaps),
+                self.eigenvalue_gap_threshold,
+            )
 
         return n_groups
 
@@ -407,8 +419,11 @@ class AdaptiveGroupingEncoder(ArrowEncoder):
             else:
                 # Split: each dim becomes its own group
                 if self.verbose:
-                    print(f"  Splitting weak group (mean |corr|={mean_corr:.3f}): "
-                          f"dims {group_dims}")
+                    _logger.info(
+                        "  Splitting weak group (mean |corr|=%.3f): dims %s",
+                        mean_corr,
+                        group_dims,
+                    )
                 for d in group_dims:
                     validated.append([d])
 
@@ -427,3 +442,12 @@ def get_encoder(mode: str, **kwargs) -> ArrowEncoder:
             f"Unknown encoding mode '{mode}'. Choose from {list(encoders.keys())}"
         )
     return encoders[mode](**kwargs)
+
+
+__all__ = [
+    "ArrowEncoder",
+    "DirectMappingEncoder",
+    "PCAResidualEncoder",
+    "AdaptiveGroupingEncoder",
+    "get_encoder",
+]

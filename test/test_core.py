@@ -31,6 +31,18 @@ class TestArrowFieldEmbeddingInit:
         with pytest.raises(ValueError, match="Unknown encoding mode"):
             afe.fit(X)
 
+    def test_zero_arrows_rejected(self, synthetic_data, manual_embedding):
+        X, _ = synthetic_data
+        afe = ArrowFieldEmbedding(n_arrows=0, backend=manual_embedding)
+        with pytest.raises(ValueError, match="n_arrows must be >= 1"):
+            afe.fit(X)
+
+    def test_non_integer_arrows_rejected(self, synthetic_data, manual_embedding):
+        X, _ = synthetic_data
+        afe = ArrowFieldEmbedding(n_arrows=1.5, backend=manual_embedding)
+        with pytest.raises(ValueError, match="n_arrows must be an integer"):
+            afe.fit(X)
+
 
 class TestFitTransformWithManualBackend:
     """Test the full pipeline using a manual (PCA) backend to avoid PaCMAP dep."""
@@ -92,6 +104,15 @@ class TestFitTransformWithManualBackend:
         assert meta["n_arrows"] == 2
         assert meta["n_features_original"] == X.shape[1]
         assert meta["dims_per_arrow"] == 3
+        assert meta["result_schema_version"] == "afe-benchmark-v3"
+        assert "spatial_information_gap" in meta
+        assert "arrow_capacity" in meta
+        assert "captured_dims" in meta
+        assert "residual_dims" in meta
+        assert "residual_selector" in meta
+        assert "feature_scaling" in meta
+        assert "arrow_attributions" in meta
+        assert meta["backend"]["name"] == "manual"
 
     def test_get_spatial(self, synthetic_data, manual_embedding):
         X, _ = synthetic_data
@@ -136,6 +157,19 @@ class TestDeterminism:
         np.testing.assert_allclose(
             results[0]["arrows"], results[1]["arrows"], atol=1e-6
         )
+
+    def test_manual_backend_preserves_spatial_coordinates_exactly(
+        self, synthetic_data, manual_embedding
+    ):
+        X, _ = synthetic_data
+        afe = ArrowFieldEmbedding(
+            n_arrows=2,
+            encoding_mode="direct",
+            backend=manual_embedding,
+            normalize_arrows=False,
+        )
+        result = afe.fit_transform(X)
+        np.testing.assert_array_equal(result["spatial"], manual_embedding)
 
 
 class TestNormalization:

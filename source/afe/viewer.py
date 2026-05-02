@@ -8,9 +8,12 @@ Generates a standalone HTML file with:
 """
 
 import json
+import logging
 import numpy as np
 from pathlib import Path
 from typing import Optional
+
+_logger = logging.getLogger(__name__)
 
 
 def _spherical_to_cartesian(arrows: np.ndarray, scale: float) -> np.ndarray:
@@ -47,6 +50,18 @@ def save_viewer(
     title : str -- viewer title
     open_browser : bool -- open in default browser after saving
     """
+    # Input validation
+    spatial = np.asarray(spatial)
+    arrows = np.asarray(arrows)
+    if spatial.ndim != 2 or spatial.shape[1] != 3:
+        raise ValueError(f"spatial must be (n, 3), got {spatial.shape}")
+    if arrows.ndim != 3 or arrows.shape[2] != 3:
+        raise ValueError(f"arrows must be (n, k, 3), got {arrows.shape}")
+    if arrows.shape[0] != spatial.shape[0]:
+        raise ValueError(
+            f"arrows and spatial must have same n: {arrows.shape[0]} vs {spatial.shape[0]}"
+        )
+
     n, k, _ = arrows.shape
 
     spatial_range = np.ptp(spatial, axis=0).mean()
@@ -72,7 +87,7 @@ def save_viewer(
         "title": title,
         "pointSize": float(point_size),
         "range": float(spatial_range),
-        "spatial": [round(float(x), 4) for x in spatial.flatten()],
+        "spatial": [round(float(x), 6) for x in spatial.flatten()],
     }
 
     if labels is not None:
@@ -83,10 +98,13 @@ def save_viewer(
         data["nLabels"] = 1
 
     for ai in range(k):
-        data[f"arrow_{ai}"] = [round(float(x), 4) for x in directions[:, ai].flatten()]
+        data[f"arrow_{ai}"] = [round(float(x), 6) for x in directions[:, ai].flatten()]
 
     data_json = json.dumps(data, separators=(",", ":"))
-    html = _TEMPLATE.replace("/*__DATA__*/", f"const DATA = {data_json};")
+    # Escape </script> to prevent XSS and JSON corruption
+    data_json = data_json.replace("</", "<\\/")
+    html = _TEMPLATE.replace("/*__TITLE__*/", title)
+    html = html.replace("/*__DATA__*/", f"const DATA = {data_json};")
 
     out = Path(path)
     out.write_text(html)
@@ -102,18 +120,19 @@ _TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AFE Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>/*__TITLE__*/</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;overflow:hidden;color:#eee;font-family:-apple-system,'Segoe UI',Roboto,monospace}
-canvas{display:block}
+canvas{display:block;position:relative;z-index:1}
 #hud{position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:10}
 #title{position:absolute;top:14px;left:14px;font-size:15px;font-weight:600;opacity:.9}
 #arrow-status{position:absolute;top:38px;left:14px;color:#aaa;font-size:12px}
 #speed-status{position:absolute;top:56px;left:14px;color:#666;font-size:11px}
 #controls{position:absolute;bottom:14px;left:14px;color:#555;font-size:11px;line-height:1.8}
 #legend{position:absolute;top:14px;right:14px;color:#bbb;font-size:12px;line-height:2}
-#click-prompt{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:20px;opacity:.5;transition:opacity .4s;letter-spacing:1px}
+#click-prompt{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:20px;opacity:.5;transition:opacity .4s;letter-spacing:1px;pointer-events:auto;cursor:pointer;z-index:15}
 </style>
 </head>
 <body>
@@ -129,16 +148,16 @@ canvas{display:block}
   </div>
   <div id="legend"></div>
   <div id="click-prompt">Click to fly</div>
+  <div id="tooltip" style="position:absolute;display:none;padding:6px 10px;background:rgba(0,0,0,0.8);color:#fff;border-radius:4px;font-size:12px;pointer-events:none;z-index:20;white-space:pre-line;"></div>
 </div>
 
-<script src="three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 /*__DATA__*/
 
 var LABEL_PALETTE = [
-  [0.90,0.10,0.10],[0.20,0.47,0.72],[0.30,0.68,0.29],[0.59,0.30,0.64],
-  [1.00,0.50,0.00],[0.95,0.95,0.20],[0.65,0.34,0.16],[0.97,0.51,0.75],
-  [0.55,0.55,0.55],[0.10,0.75,0.75]
+  [0.90,0.60,0.00],[0.35,0.70,0.90],[0.00,0.60,0.50],[0.95,0.90,0.25],
+  [0.00,0.45,0.70],[0.80,0.40,0.00],[0.80,0.60,0.70],[0.55,0.55,0.55]
 ];
 var ARROW_HEX = [
   0xff3333,0x3388ff,0x33dd33,0xaa55ff,0xff8800,
@@ -480,6 +499,13 @@ renderer.domElement.addEventListener('mousedown', function(e) {
     orbitLastX = e.clientX; orbitLastY = e.clientY;
   }
 });
+// Click-prompt also triggers pointer lock (fallback for event-bubbling issues)
+document.getElementById('click-prompt').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (camMode === 'fly') {
+    renderer.domElement.requestPointerLock();
+  }
+});
 renderer.domElement.addEventListener('mouseup', function(e) {
   orbitDragging = false; orbitPanning = false;
 });
@@ -643,6 +669,81 @@ for(var i=0;i<nL;i++){
 }
 updateHUD();
 
+// Raycaster for hover tooltips
+var raycaster = new THREE.Raycaster();
+var mouse = new THREE.Vector2();
+var tooltip = document.getElementById('tooltip');
+
+function updateRaycaster(clientX, clientY) {
+  mouse.x = (clientX / innerWidth) * 2 - 1;
+  mouse.y = -(clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  var intersects = raycaster.intersectObject(points);
+  if (intersects.length > 0) {
+    var idx = intersects[0].instanceId;
+    var px = DATA.spatial[idx*3].toFixed(3);
+    var py = DATA.spatial[idx*3+1].toFixed(3);
+    var pz = DATA.spatial[idx*3+2].toFixed(3);
+    tooltip.style.display = 'block';
+    tooltip.style.left = (clientX + 12) + 'px';
+    tooltip.style.top = (clientY + 12) + 'px';
+    tooltip.textContent = 'Point ' + idx + ' | Label: ' + DATA.labels[idx] + ' | (' + px + ', ' + py + ', ' + pz + ')';
+  } else {
+    tooltip.style.display = 'none';
+  }
+}
+
+document.addEventListener('mousemove', function(e) {
+  if (camMode === 'orbit' || (camMode === 'fly' && !locked)) {
+    updateRaycaster(e.clientX, e.clientY);
+  }
+});
+
+// Touch support for orbit mode
+var touchStartDist = 0;
+var touchStartOrbitDist = 0;
+renderer.domElement.addEventListener('touchstart', function(e) {
+  if (camMode !== 'orbit') return;
+  if (e.touches.length === 1) {
+    orbitDragging = true;
+    orbitLastX = e.touches[0].clientX;
+    orbitLastY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    touchStartDist = Math.sqrt(dx*dx + dy*dy);
+    touchStartOrbitDist = orbitDist;
+  }
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchmove', function(e) {
+  if (camMode !== 'orbit') return;
+  e.preventDefault();
+  if (e.touches.length === 1 && orbitDragging) {
+    var dx2 = e.touches[0].clientX - orbitLastX;
+    var dy2 = e.touches[0].clientY - orbitLastY;
+    orbitLastX = e.touches[0].clientX;
+    orbitLastY = e.touches[0].clientY;
+    orbitTheta -= dx2 * 0.005;
+    orbitPhi += dy2 * 0.005;
+    orbitPhi = Math.max(-1.5, Math.min(1.5, orbitPhi));
+    updateOrbitCamera();
+  } else if (e.touches.length === 2) {
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    var dist = Math.sqrt(dx*dx + dy*dy);
+    if (touchStartDist > 0) {
+      orbitDist = touchStartOrbitDist * (touchStartDist / dist);
+      orbitDist = Math.max(range * 0.1, Math.min(range * 20, orbitDist));
+      updateOrbitCamera();
+    }
+  }
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchend', function(e) {
+  orbitDragging = false;
+});
+
 // Resize
 addEventListener('resize', function(){
   camera.aspect=innerWidth/innerHeight;
@@ -662,3 +763,6 @@ var clock = new THREE.Clock();
 </body>
 </html>
 """
+
+
+__all__ = ["save_viewer"]

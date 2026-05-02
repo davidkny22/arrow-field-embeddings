@@ -76,3 +76,6 @@ class Reconstructor:
                     X_recon[:, dim_idx] = residual_decoded[:, j]
 
         return X_recon
+
+
+__all__ = ["Reconstructor"]

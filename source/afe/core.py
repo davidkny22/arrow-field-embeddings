@@ -1,17 +1,22 @@
 """Core ArrowFieldEmbedding class."""
 
+import logging
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator
 from typing import Optional, Union, Literal, Dict
 
 from .backends import SpatialBackend, get_backend
-from .gap_analysis import InformationGapAnalyzer
+from .gap_analysis import SpatialInformationGapAnalyzer
 from .encoding import get_encoder
 from .normalization import ArrowNormalizer
 from .reconstruction import Reconstructor
+from .attribution import get_arrow_attributions
+from .reproducibility import RESULT_SCHEMA_VERSION
+
+_logger = logging.getLogger(__name__)
 
 
-class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
+class ArrowFieldEmbedding(BaseEstimator):
     """Arrow Field Embedding: dimensionality reduction with directional annotations.
 
     Augments standard 3D spatial embedding with k arrows per point, where each
@@ -83,7 +88,7 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         self._arrows = None
         self._arrows_raw = None
         self._gap_report = None
-        self._X_original = None
+        self._n_features_original = None
 
     def fit(self, X: np.ndarray, y=None) -> "ArrowFieldEmbedding":
         """Compute the spatial embedding and arrow field from X.
@@ -93,12 +98,21 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         X : ndarray (n_samples, n_features)
         y : ignored
         """
+        if isinstance(self.n_arrows, bool) or not isinstance(self.n_arrows, (int, np.integer)):
+            raise ValueError("n_arrows must be an integer >= 1 for AFE.")
+        if int(self.n_arrows) < 1:
+            raise ValueError(
+                "n_arrows must be >= 1 for AFE. Use a standalone spatial "
+                "backend result for the zero-arrow/normal-DR baseline."
+            )
+        self.n_arrows_ = int(self.n_arrows)
+
         X = np.asarray(X, dtype=np.float32)
-        self._X_original = X
+        self._n_features_original = X.shape[1]
 
         # Step 1: Spatial layout
         if self.verbose:
-            print("Step 1: Computing spatial layout...")
+            _logger.info("Step 1: Computing spatial layout...")
         self._backend_instance = get_backend(
             self.backend,
             backend_kwargs=self.backend_kwargs,
@@ -107,20 +121,20 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         )
         self._spatial = self._backend_instance.fit_transform(X)
 
-        # Step 2: Information gap analysis
+        # Step 2: Spatial information gap analysis
         if self.verbose:
-            print("Step 2: Analyzing information gap...")
-        self._gap_analyzer = InformationGapAnalyzer(
+            _logger.info("Step 2: Analyzing spatial information gap...")
+        self._gap_analyzer = SpatialInformationGapAnalyzer(
             correlation_threshold=self.correlation_threshold,
             verbose=self.verbose,
         )
         self._gap_report = self._gap_analyzer.analyze(
-            X, self._spatial, n_arrows=self.n_arrows
+            X, self._spatial, n_arrows=self.n_arrows_
         )
 
         # Step 3: Arrow encoding
         if self.verbose:
-            print(f"Step 3: Encoding arrows ({self.encoding_mode} mode)...")
+            _logger.info("Step 3: Encoding arrows (%s mode)...", self.encoding_mode)
 
         encoder_kwargs = {"verbose": self.verbose}
         if self.encoding_mode == "adaptive":
@@ -129,7 +143,7 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         self._encoder = get_encoder(self.encoding_mode, **encoder_kwargs)
         self._encoder.fit(
             self._gap_report["residual_data"],
-            self.n_arrows,
+            self.n_arrows_,
             self._gap_report,
         )
         self._arrows_raw = self._encoder.encode(self._gap_report["residual_data"])
@@ -137,7 +151,7 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         # Step 4: Normalization
         if self.normalize_arrows:
             if self.verbose:
-                print("Step 4: Normalizing arrows...")
+                _logger.info("Step 4: Normalizing arrows...")
             self._normalizer = ArrowNormalizer()
             self._arrows = self._normalizer.fit_transform(self._arrows_raw)
         else:
@@ -175,9 +189,15 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         return self._arrows.copy()
 
     def get_gap_report(self) -> Dict:
-        """Return the information gap analysis report."""
+        """Return the spatial information gap analysis report."""
         self._check_fitted()
-        return self._gap_report.copy()
+        import copy
+        return copy.deepcopy(self._gap_report)
+
+    def get_arrow_attributions(self, feature_names=None, top_n: int = 8) -> list:
+        """Return how each arrow maps back to residual dimensions/components."""
+        self._check_fitted()
+        return get_arrow_attributions(self, feature_names=feature_names, top_n=top_n)
 
     def reconstruct(self) -> np.ndarray:
         """Reconstruct approximate HD vectors from the embedding."""
@@ -185,18 +205,71 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
         return self._reconstructor.reconstruct(self._spatial, self._arrows_raw)
 
     def _build_result(self) -> Dict:
+        residual_dims = list(self._gap_report["residual_dims"])
+        captured_dims = list(self._gap_report["captured_dims"])
+        arrow_capacity = {
+            "spatial_dims": 3,
+            "n_arrows": int(self.n_arrows_),
+            "dims_per_arrow": 3,
+            "arrow_channel_capacity": int(self.n_arrows_ * 3),
+            "total_representation_dims": int(3 + self.n_arrows_ * 3),
+            "n_residual_dims": len(residual_dims),
+            "n_mapped_residual_dims": int(
+                min(len(residual_dims), self.n_arrows_ * 3)
+                if self.encoding_mode == "direct"
+                else min(len(residual_dims), self.n_arrows_)
+            ),
+        }
         return {
             "spatial": self._spatial.copy(),
             "arrows": self._arrows.copy(),
             "metadata": {
+                "result_schema_version": RESULT_SCHEMA_VERSION,
                 "gap_report": self._gap_report,
+                "spatial_information_gap": self._gap_report["spatial_information_gap"],
                 "encoding_mode": self.encoding_mode,
-                "n_arrows": self.n_arrows,
-                "n_features_original": self._X_original.shape[1],
-                "n_residual_dims": len(self._gap_report["residual_dims"]),
+                "n_arrows": self.n_arrows_,
+                "arrow_capacity": arrow_capacity,
+                "arrow_attributions": get_arrow_attributions(self),
+                "residual_selector": {
+                    "method": "spatial_axis_max_abs_pearson_correlation",
+                    "correlation_threshold": self.correlation_threshold,
+                    "minimum_residual_dims": min(self.n_arrows_ * 3, self._n_features_original),
+                    "residual_order": "variance_descending_after_capture_split",
+                },
+                "feature_scaling": {
+                    "input": "as_provided_float32",
+                    "arrow_normalization": (
+                        "per_arrow_spherical_minmax" if self.normalize_arrows else "none"
+                    ),
+                },
+                "backend": self._backend_metadata(),
+                "n_features_original": self._n_features_original,
+                "captured_dims": captured_dims,
+                "residual_dims": residual_dims,
+                "n_captured_dims": len(captured_dims),
+                "n_residual_dims": len(residual_dims),
                 "dims_per_arrow": 3,
-                "total_encoded_dims": 3 + self.n_arrows * 3,
+                "total_encoded_dims": arrow_capacity["total_representation_dims"],
             },
+        }
+
+    def _backend_metadata(self) -> Dict:
+        backend_value = self.backend
+        if isinstance(backend_value, np.ndarray):
+            backend_name = "manual"
+            backend_params = {"source": "ndarray"}
+        elif isinstance(backend_value, SpatialBackend):
+            backend_name = backend_value.__class__.__name__
+            backend_params = {}
+        else:
+            backend_name = str(backend_value)
+            backend_params = dict(self.backend_kwargs or {})
+        return {
+            "name": backend_name,
+            "params": backend_params,
+            "random_state": self.random_state,
+            "spatial_coordinates_fixed": isinstance(backend_value, np.ndarray),
         }
 
     def _check_fitted(self):
@@ -204,3 +277,6 @@ class ArrowFieldEmbedding(BaseEstimator, TransformerMixin):
             raise RuntimeError(
                 "ArrowFieldEmbedding has not been fitted. Call fit() first."
             )
+
+
+__all__ = ["ArrowFieldEmbedding"]

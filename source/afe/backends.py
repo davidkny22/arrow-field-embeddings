@@ -102,11 +102,34 @@ class DREAMSBackend(SpatialBackend):
             from openTSNE import TSNE
         except ImportError:
             raise ImportError(
-                "DREAMS requires the openTSNE fork from berenslab. "
+                "DREAMS is experimental and requires the openTSNE fork from berenslab. "
                 "Install with:\n"
                 "  git clone --branch tp --single-branch "
                 "https://github.com/berenslab/DREAMS.git\n"
                 "  cd DREAMS && python setup.py install"
+            )
+        import inspect
+
+        dreams_params = set(inspect.signature(TSNE.__init__).parameters)
+        required_params = {"regularization", "reg_lambda", "reg_embedding"}
+        if not required_params.issubset(dreams_params):
+            raise ImportError(
+                "DREAMSBackend requires the experimental berenslab DREAMS "
+                "openTSNE fork with regularization/reg_embedding support. "
+                "A standard openTSNE install is not compatible."
+            )
+        try:
+            from openTSNE import tsne as opentsne_tsne
+            optimizer_params = set(
+                inspect.signature(opentsne_tsne.gradient_descent.__call__).parameters
+            )
+        except (ImportError, AttributeError, ValueError):
+            optimizer_params = set()
+        if "X" not in optimizer_params:
+            raise ImportError(
+                "DREAMSBackend found openTSNE regularization parameters, but "
+                "the optimizer is not the compatible DREAMS fork expected by "
+                "this backend. Install the berenslab DREAMS openTSNE fork."
             )
 
         from sklearn.decomposition import PCA
@@ -138,6 +161,117 @@ class DREAMSBackend(SpatialBackend):
         raise NotImplementedError(
             "DREAMSBackend does not currently support transform on new data."
         )
+
+
+class UMAPBackend(SpatialBackend):
+    """UMAP-based spatial layout.
+
+    Requires: pip install umap-learn
+    """
+
+    def __init__(self, random_state=None, verbose=False, **kwargs):
+        self.random_state = random_state
+        self.verbose = verbose
+        self.umap_kwargs = kwargs
+        self._reducer = None
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        try:
+            import umap
+        except ImportError:
+            raise ImportError(
+                "UMAP is required but not installed. "
+                "Install with: pip install umap-learn"
+            )
+
+        self._reducer = umap.UMAP(
+            n_components=3,
+            random_state=self.random_state,
+            verbose=self.verbose,
+            **self.umap_kwargs,
+        )
+        return self._reducer.fit_transform(X).astype(np.float32)
+
+    def transform(self, X_new: np.ndarray) -> np.ndarray:
+        if self._reducer is None:
+            raise RuntimeError("Backend must be fit before calling transform.")
+        return self._reducer.transform(X_new).astype(np.float32)
+
+
+class TSNEBackend(SpatialBackend):
+    """t-SNE spatial layout using sklearn.
+
+    This is a standalone t-SNE backend, separate from DREAMSBackend
+    (which uses a regularized openTSNE fork).
+
+    sklearn's TSNE is already a core dependency — no extra install needed.
+    """
+
+    def __init__(self, random_state=None, verbose=False, **kwargs):
+        self.random_state = random_state
+        self.verbose = verbose
+        self.tsne_kwargs = kwargs
+        self._embedding = None
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        from sklearn.manifold import TSNE
+
+        tsne = TSNE(
+            n_components=3,
+            random_state=self.random_state or 42,
+            verbose=1 if self.verbose else 0,
+            **self.tsne_kwargs,
+        )
+        self._embedding = tsne.fit_transform(X).astype(np.float32)
+        return self._embedding.copy()
+
+    def transform(self, X_new: np.ndarray) -> np.ndarray:
+        raise NotImplementedError(
+            "TSNEBackend does not support transform on new data. "
+            "t-SNE is a non-parametric method without an "
+            "out-of-sample extension."
+        )
+
+
+class TriMAPBackend(SpatialBackend):
+    """TriMAP-based spatial layout.
+
+    Requires: pip install trimap
+    """
+
+    def __init__(self, random_state=None, verbose=False, **kwargs):
+        self.random_state = random_state
+        self.verbose = verbose
+        self.trimap_kwargs = kwargs
+        self._reducer = None
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        try:
+            import trimap
+        except ImportError:
+            raise ImportError(
+                "TriMAP is required but not installed. "
+                "Install with: pip install trimap"
+            )
+
+        # Pass random_state directly to TRIMAP instead of mutating global state
+        trimap_kwargs = dict(self.trimap_kwargs)
+        if self.random_state is not None and "random_state" not in trimap_kwargs:
+            trimap_kwargs["random_state"] = self.random_state
+
+        self._reducer = trimap.TRIMAP(
+            n_dims=3,
+            verbose=self.verbose,
+            **trimap_kwargs,
+        )
+        result = self._reducer.fit_transform(X).astype(np.float32)
+
+        return result
+
+    def transform(self, X_new: np.ndarray) -> np.ndarray:
+        if self._reducer is None:
+            raise RuntimeError("Backend must be fit before calling transform.")
+        return self._reducer.transform(X_new).astype(np.float32)
 
 
 class ManualBackend(SpatialBackend):
@@ -190,6 +324,18 @@ def get_backend(
             return DREAMSBackend(
                 random_state=random_state, verbose=verbose, **backend_kwargs
             )
+        elif backend == "umap":
+            return UMAPBackend(
+                random_state=random_state, verbose=verbose, **backend_kwargs
+            )
+        elif backend == "tsne":
+            return TSNEBackend(
+                random_state=random_state, verbose=verbose, **backend_kwargs
+            )
+        elif backend == "trimap":
+            return TriMAPBackend(
+                random_state=random_state, verbose=verbose, **backend_kwargs
+            )
         elif backend == "manual":
             raise ValueError(
                 "For manual backend, pass a numpy array directly "
@@ -198,7 +344,20 @@ def get_backend(
         else:
             raise ValueError(
                 f"Unknown backend '{backend}'. "
-                f"Choose from: 'pacmap', 'dreams', or pass an ndarray."
+                f"Choose from: 'pacmap', 'umap', 'tsne', 'trimap', "
+                f"'dreams', or pass an ndarray."
             )
 
     raise TypeError(f"Unsupported backend type: {type(backend)}")
+
+
+__all__ = [
+    "SpatialBackend",
+    "PaCMAPBackend",
+    "DREAMSBackend",
+    "UMAPBackend",
+    "TSNEBackend",
+    "TriMAPBackend",
+    "ManualBackend",
+    "get_backend",
+]

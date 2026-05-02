@@ -1,10 +1,15 @@
-"""Information gap analysis: what does the spatial layout miss?"""
+"""Spatial information gap analysis: what does the spatial layout miss?"""
 
+import logging
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 
+from .evaluation import correlation_matrix_to_spatial
 
-class InformationGapAnalyzer:
+_logger = logging.getLogger(__name__)
+
+
+class SpatialInformationGapAnalyzer:
     """Measure what the 3D spatial layout fails to capture.
 
     Computes Pearson correlation between each original dimension and the
@@ -56,7 +61,7 @@ class InformationGapAnalyzer:
             captured_dims : list[int]
             residual_dims : list[int]  (sorted: worst-captured first)
             residual_data : ndarray (n, n_residual)
-            information_gap_score : float
+            spatial_information_gap : float
         """
         d = X_high.shape[1]
         corr_matrix = self._compute_correlation_matrix(X_high, X_3d)
@@ -84,13 +89,14 @@ class InformationGapAnalyzer:
             else np.empty((len(X_high), 0), dtype=np.float32)
         )
 
-        gap_score = 1.0 - np.mean(max_abs_corr)
+        gap = float(1.0 - np.mean(max_abs_corr))
 
         if self.verbose:
-            print(
-                f"Gap analysis: {len(captured)} captured, "
-                f"{len(residual_sorted)} residual dims "
-                f"(gap score: {gap_score:.3f})"
+            _logger.info(
+                "Spatial information gap analysis: %d captured, %d residual dims (gap: %.3f)",
+                len(captured),
+                len(residual_sorted),
+                gap,
             )
 
         return {
@@ -99,7 +105,9 @@ class InformationGapAnalyzer:
             "captured_dims": captured,
             "residual_dims": residual_sorted,
             "residual_data": residual_data,
-            "information_gap_score": gap_score,
+            "spatial_information_gap": gap,
+            "gap_definition": "1 - mean_j max_l |corr(X_j, Y_l)|",
+            "gap_readout": "linear_feature_visibility",
         }
 
     def _compute_correlation_matrix(
@@ -109,25 +117,7 @@ class InformationGapAnalyzer:
 
         Returns ndarray of shape (n_features, 3).
         """
-        n = len(X_high)
-
-        # Center both
-        X_h = X_high - X_high.mean(axis=0, keepdims=True)
-        X_s = X_3d - X_3d.mean(axis=0, keepdims=True)
-
-        # Standard deviations
-        std_h = np.std(X_high, axis=0, ddof=0)
-        std_s = np.std(X_3d, axis=0, ddof=0)
-
-        # Avoid division by zero for constant dimensions
-        std_h = np.where(std_h == 0, 1.0, std_h)
-        std_s = np.where(std_s == 0, 1.0, std_s)
-
-        # Correlation: (d, 3) = (d, n) @ (n, 3) / n, then normalize
-        corr = (X_h.T @ X_s) / n
-        corr = corr / (std_h[:, None] * std_s[None, :])
-
-        return corr.astype(np.float32)
+        return correlation_matrix_to_spatial(X_high, X_3d)
 
     def _classify_dimensions(
         self,
@@ -160,3 +150,6 @@ class InformationGapAnalyzer:
             captured = [d for d in captured if d not in set(promote)]
 
         return captured, residual
+
+
+__all__ = ["SpatialInformationGapAnalyzer"]
