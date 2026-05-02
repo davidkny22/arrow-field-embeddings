@@ -13,4 +13,7 @@ clean:
 	find . -type f -name "*.pyc" -delete
 
 bench:
-	python benchmarks/run_benchmark.py
+	python benchmarks/compare_methods.py --datasets swiss_roll --backends tsne --n-seeds 1 --modes direct --n-arrows 1 --skip-significance
+
+bench-full:
+	python benchmarks/compare_methods.py --category all --n-seeds 10

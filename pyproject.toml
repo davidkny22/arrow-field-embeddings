@@ -1,6 +1,115 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "afe"
+dynamic = ["version"]
+authors = [
+    {name = "David Kogan", email = "davidkny22@gmail.com"},
+]
+description = "Arrow Field Embeddings: preserving high-dimensional information in 3D with directional annotations"
+readme = "README.md"
+license = {text = "AGPL-3.0-or-later"}
+requires-python = ">=3.11"
+keywords = [
+    "dimensionality-reduction",
+    "visualization",
+    "embedding",
+    "arrows",
+    "high-dimensional-data",
+    "scatter-plot",
+    "manifold-learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "numpy >= 1.23, < 2.4",
+    "scikit-learn >= 1.0",
+    "scipy >= 1.7",
+    "plotly >= 5.0",
+]
+
+[project.optional-dependencies]
+pacmap = ["pacmap >= 0.7"]
+umap = ["umap-learn >= 0.5"]
+trimap = ["trimap >= 1.0"]
+backends-all = [
+    "pacmap >= 0.7",
+    "umap-learn >= 0.5",
+    "trimap >= 1.0",
+]
+benchmark = [
+    "matplotlib",
+    "pandas",
+    "scanpy",
+    "scvelo",
+    "scrnaseq",
+    "delayedarray",
+    "dolomite-base",
+    "dolomite-matrix",
+    "dolomite-sce",
+    "gypsum-client",
+    "singlecellexperiment",
+    "summarizedexperiment",
+    "anndata",
+    "h5py",
+    "igraph",
+    "leidenalg",
+    "datasets",
+    "sentence-transformers",
+]
+full = [
+    "pacmap >= 0.7",
+    "umap-learn >= 0.5",
+    "trimap >= 1.0",
+    "matplotlib",
+    "pandas",
+    "scanpy",
+    "scvelo",
+    "scrnaseq",
+    "delayedarray",
+    "dolomite-base",
+    "dolomite-matrix",
+    "dolomite-sce",
+    "gypsum-client",
+    "singlecellexperiment",
+    "summarizedexperiment",
+    "anndata",
+    "h5py",
+    "igraph",
+    "leidenalg",
+    "datasets",
+    "sentence-transformers",
+]
+dev = [
+    "pytest",
+    "matplotlib",
+    "pandas",
+]
+
+[project.urls]
+Homepage = "https://github.com/davidkny22/arrow-field-embeddings"
+"Bug Tracker" = "https://github.com/davidkny22/arrow-field-embeddings/issues"
+Documentation = "https://github.com/davidkny22/arrow-field-embeddings#readme"
+
+[tool.setuptools]
+package-dir = {"" = "source"}
+
+[tool.setuptools.packages.find]
+where = ["source"]
+
+[tool.setuptools.dynamic]
+version = {attr = "afe._version.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

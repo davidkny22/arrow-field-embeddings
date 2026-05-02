@@ -1,0 +1,29 @@
+numpy >= 1.23, < 2.4
+scikit-learn >= 1.0
+scipy >= 1.7
+plotly >= 5.0
+matplotlib
+pandas
+
+# Spatial backends used in the v3 benchmark.
+pacmap >= 0.7
+umap-learn >= 0.5
+trimap >= 1.0
+
+# Dataset loaders for the full benchmark suite.
+scanpy
+scvelo
+scrnaseq
+delayedarray
+dolomite-base
+dolomite-matrix
+dolomite-sce
+gypsum-client
+singlecellexperiment
+summarizedexperiment
+anndata
+h5py
+igraph
+leidenalg
+datasets
+sentence-transformers
