@@ -20,6 +20,10 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('AFE Viewer crashed:', error, info.componentStack);
   }
 
+  resetError = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
   render() {
     if (!this.state.hasError) return this.props.children;
 
@@ -33,12 +37,20 @@ export class ErrorBoundary extends Component<Props, State> {
           <p className="text-gray-500 text-xs mb-6">
             This is usually a WebGL or rendering error. Reloading should fix it.
           </p>
-          <button
-            onClick={() => window.location.reload()}
-            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors"
-          >
-            Reload
-          </button>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={this.resetError}
+              className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded transition-colors"
+            >
+              Try Again
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-5 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded transition-colors"
+            >
+              Reload
+            </button>
+          </div>
         </div>
       </div>
     );

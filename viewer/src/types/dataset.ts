@@ -28,7 +28,7 @@ export interface AFEDataset {
 
   // Metadata
   gap_report: {
-    information_gap_score: number;
+    spatial_information_gap: number;
     n_residual_dims: number;
     n_captured_dims: number;
   };
@@ -36,7 +36,7 @@ export interface AFEDataset {
     knn_recall_k10: number;
     arrow_knn_recall_k10: number;
     reconstruction_mse: number;
-    arrow_info_gain: number;
+    arrow_spatial_information_gain: number;
     spearman_dist_corr: number;
   };
 

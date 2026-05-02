@@ -21,7 +21,7 @@ export function ReconPanel() {
   const fullBarPct = (fullMSE / maxError) * 100;
 
   const { gap_report } = dataset;
-  const gapPct = gap_report.information_gap_score * 100;
+  const gapPct = gap_report.spatial_information_gap * 100;
 
   return (
     <div className="w-80 rounded-lg bg-black/80 p-4 text-white backdrop-blur-sm ring-1 ring-white/10">

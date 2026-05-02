@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AFEDataset, ColorMode, DatasetEntry, ClusterData } from '../types/dataset';
+import type { AFEDataset, ColorMode, DatasetEntry } from '../types/dataset';
 
 /**
  * Compute how much to spread the point cloud so arrows and orbs don't overlap.
@@ -83,6 +83,7 @@ interface ViewerState {
   datasetUrl: string;
   dataset: AFEDataset | null;
   loading: boolean;
+  loadingProgress: number;
   error: string | null;
 
   // Selection
@@ -102,6 +103,7 @@ interface ViewerState {
 
   // Color
   colorMode: ColorMode;
+  palette: 'golden' | 'okabe' | 'tableau';
 
   // Neighborhood
   neighborIndices: number[];
@@ -121,6 +123,10 @@ interface ViewerState {
   arrowScale: number;
   arrowDensity: number; // 1 = every point, 2 = every 2nd point, etc.
   arrowsVisible: boolean;
+  arrowMinMagnitude: number;
+
+  // Point state
+  pointSizeMultiplier: number;
 
   // Clicked arrow info (for arrow info panel)
   clickedArrow: { arrowIdx: number; pointIdx: number } | null;
@@ -130,6 +136,7 @@ interface ViewerState {
   setDatasetUrl: (url: string) => void;
   setDataset: (dataset: AFEDataset) => void;
   setLoading: (loading: boolean) => void;
+  setLoadingProgress: (progress: number) => void;
   setError: (error: string | null) => void;
   selectPoint: (index: number | null) => void;
   hoverPoint: (index: number | null) => void;
@@ -139,6 +146,7 @@ interface ViewerState {
   cancelFlyTo: () => void;
   setFlyToState: (state: 'idle' | 'animating' | 'settling') => void;
   setColorMode: (mode: ColorMode) => void;
+  setPalette: (palette: 'golden' | 'okabe' | 'tableau') => void;
   setControlMode: (mode: 'orbit' | 'fly') => void;
   setNeighborhood: (center: number | null, indices: number[]) => void;
   setPulseIndex: (index: number | null) => void;
@@ -152,14 +160,19 @@ interface ViewerState {
   setArrowScale: (scale: number) => void;
   setArrowDensity: (density: number) => void;
   setArrowsVisible: (visible: boolean) => void;
+  setArrowMinMagnitude: (m: number) => void;
   setClickedArrow: (info: { arrowIdx: number; pointIdx: number } | null) => void;
+
+  // Point actions
+  setPointSizeMultiplier: (m: number) => void;
 }
 
-export const useViewerStore = create<ViewerState>((set, get) => ({
+export const useViewerStore = create<ViewerState>((set) => ({
   availableDatasets: [],
   datasetUrl: '',
   dataset: null,
   loading: true,
+  loadingProgress: 0,
   error: null,
 
   selectedIndex: null,
@@ -175,6 +188,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   autoSpaceScale: 1,
 
   colorMode: 'cluster',
+  palette: 'okabe',
 
   neighborIndices: [],
   neighborCenter: null,
@@ -188,6 +202,8 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   arrowScale: 1.0,
   arrowDensity: 1,
   arrowsVisible: true,
+  arrowMinMagnitude: 0.0,
+  pointSizeMultiplier: 1.0,
   clickedArrow: null,
 
   setAvailableDatasets: (datasets) =>
@@ -204,6 +220,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       datasetUrl: url,
       dataset: null,
       loading: true,
+      loadingProgress: 0,
       error: null,
       selectedIndex: null,
       hoveredIndex: null,
@@ -212,10 +229,18 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
       flyToTarget: null,
       flyToState: 'idle',
       colorMode: 'cluster',
+      palette: 'okabe',
       introState: 'pending',
       neighborIndices: [],
       neighborCenter: null,
       activeArrowIndex: 0,
+      spaceScale: 0.5,
+      arrowScale: 1.0,
+      arrowDensity: 1,
+      arrowsVisible: true,
+      arrowMinMagnitude: 0.0,
+      pointSizeMultiplier: 1.0,
+      clickedArrow: null,
     }),
 
   setDataset: (dataset) => {
@@ -238,6 +263,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   },
 
   setLoading: (loading) => set({ loading }),
+  setLoadingProgress: (loadingProgress) => set({ loadingProgress }),
   setError: (error) => set({ error, loading: false }),
 
   selectPoint: (index) => set({ selectedIndex: index }),
@@ -251,6 +277,7 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   setFlyToState: (state) => set({ flyToState: state }),
 
   setColorMode: (mode) => set({ colorMode: mode }),
+  setPalette: (palette) => set({ palette }),
   setControlMode: (mode) => set({ controlMode: mode }),
   setNeighborhood: (center, indices) =>
     set({ neighborCenter: center, neighborIndices: indices }),
@@ -283,5 +310,8 @@ export const useViewerStore = create<ViewerState>((set, get) => ({
   setArrowScale: (scale) => set({ arrowScale: scale }),
   setArrowDensity: (density) => set({ arrowDensity: density }),
   setArrowsVisible: (visible) => set({ arrowsVisible: visible }),
+  setArrowMinMagnitude: (m) => set({ arrowMinMagnitude: m }),
   setClickedArrow: (info) => set({ clickedArrow: info }),
+
+  setPointSizeMultiplier: (m) => set({ pointSizeMultiplier: m }),
 }));

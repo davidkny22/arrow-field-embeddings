@@ -17,7 +17,7 @@ export function MetricsBar() {
 
   if (!dataset) return null;
 
-  const { metrics, gap_report } = dataset;
+  const { metrics } = dataset;
 
   return (
     <div className="fixed top-14 left-4 z-40 flex flex-wrap items-center gap-2 max-w-[calc(100vw-22rem)]">
@@ -59,7 +59,7 @@ export function MetricsBar() {
       {/* Info Gain */}
       <span className="rounded-lg bg-black/60 px-2.5 py-1 text-xs text-white/70 backdrop-blur-sm border border-white/10">
         <span className="text-white/40 mr-1">Info Gain</span>
-        <span className="font-mono">{pct(metrics.arrow_info_gain)}</span>
+        <span className="font-mono">{pct(metrics.arrow_spatial_information_gain)}</span>
       </span>
 
       {/* Recon MSE */}

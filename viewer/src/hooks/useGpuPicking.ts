@@ -224,10 +224,12 @@ export function useGpuPicking(
 
     renderPickingPass(_bridge);
 
+    const rx = Math.max(0, Math.min(Math.round(mouse.current.x), targetRef.current.width - 1));
+    const ry = Math.max(0, Math.min(Math.round(mouse.current.y), targetRef.current.height - 1));
     gl.readRenderTargetPixels(
       targetRef.current,
-      Math.round(mouse.current.x),
-      Math.round(mouse.current.y),
+      rx,
+      ry,
       1, 1,
       pixel.current,
     );

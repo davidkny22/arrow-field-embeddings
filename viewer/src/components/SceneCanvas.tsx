@@ -17,8 +17,52 @@ import { BookmarkRestore } from './BookmarkRestore';
 import { ArrowField } from './ArrowField';
 import { useViewerStore } from '../store/useViewerStore';
 
+let screenshotCallback: (() => void) | null = null;
+
+function ScreenshotShortcut() {
+  const { gl } = useThree();
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'p' || e.key === 'P') {
+        screenshotCallback?.();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  useEffect(() => {
+    screenshotCallback = () => {
+      gl.domElement.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `afe-screenshot-${Date.now()}.png`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 100);
+      });
+    };
+    return () => {
+      screenshotCallback = null;
+    };
+  }, [gl]);
+
+  return null;
+}
+
+export function takeScreenshot() {
+  screenshotCallback?.();
+}
+
 const FOG_COLOR = '#0a0a0a';
 const NUM_POINTS_FOG_THRESHOLD = 50000;
+const LIGHT_POS_1 = [50, 50, 50] as const;
+const LIGHT_POS_2 = [-50, -30, -50] as const;
 
 /** Ctrl+drag swaps orbit ↔ pan on OrbitControls (trackpad-friendly). */
 function CtrlPanSwap() {
@@ -71,8 +115,8 @@ export function SceneCanvas() {
   }, []);
 
   // Dynamic fog from point count + coordinate extent
-  const { fogNear, fogFar } = useMemo(() => {
-    if (!dataset) return { fogNear: 60, fogFar: 200 };
+  const { fogNear, fogFar, boundingRadius } = useMemo(() => {
+    if (!dataset) return { fogNear: 60, fogFar: 200, boundingRadius: 0 };
 
     const n = dataset.n_points;
     let maxDist = 0;
@@ -89,31 +133,42 @@ export function SceneCanvas() {
     return {
       fogNear: isLarge ? maxDist * 0.3 : maxDist * 1.2,
       fogFar: isLarge ? maxDist * 3.0 : maxDist * 4 * multiplier,
+      boundingRadius: maxDist,
     };
   }, [dataset]);
+
+  // Memoize props to prevent R3F reconciliation churn
+  const fogArgs = useMemo(
+    () => [FOG_COLOR, fogNear * totalScale, fogFar * totalScale] as const,
+    [fogNear, fogFar, totalScale]
+  );
+  const groupScale = useMemo(
+    () => [totalScale, totalScale, totalScale] as const,
+    [totalScale]
+  );
 
   if (!dataset) return null;
 
   return (
     <div className="fixed inset-0">
       <Canvas
-        camera={{ position: [0, 0, 120], fov: 60, near: 0.1, far: 1500 }}
+        camera={{ position: [0, 0, Math.max(120, boundingRadius * 2.5)], fov: 60, near: 0.1, far: 1500 }}
         gl={{ antialias: true }}
         style={{ background: FOG_COLOR }}
       >
-        <fog attach="fog" args={[FOG_COLOR, fogNear * totalScale, fogFar * totalScale]} />
+        <fog attach="fog" args={fogArgs} />
         <ambientLight intensity={0.4} />
-        <directionalLight position={[50, 50, 50]} intensity={0.5} />
-        <directionalLight position={[-50, -30, -50]} intensity={0.2} />
+        <directionalLight position={LIGHT_POS_1} intensity={0.5} />
+        <directionalLight position={LIGHT_POS_2} intensity={0.2} />
         <CameraLight />
-        <group scale={[totalScale, totalScale, totalScale]}>
+        <group scale={groupScale}>
           <PointCloud />
           <NeighborLines />
           <DistanceRings />
           <PointLabel />
           <ClusterLabels />
+          <ArrowField />
         </group>
-        <ArrowField />
         <CameraAnimator />
         <OrbitControls
           makeDefault
@@ -126,6 +181,7 @@ export function SceneCanvas() {
           enableZoom={false}
         />
         <CtrlPanSwap />
+        <ScreenshotShortcut />
         <IntroAnimation />
         <ScrollZoom />
         <FlyControls />

@@ -1,6 +1,8 @@
 import type { AFEDataset, ClusterData, ColorMode } from '../types/dataset';
 import { hslToRgb } from '../utils/color';
 
+export type PaletteName = 'golden' | 'okabe' | 'tableau';
+
 export interface ColorParams {
   clusterPalette?: Map<number, [number, number, number]>;
   highlightedIndices?: Set<number>;
@@ -13,21 +15,63 @@ export interface ColorParams {
   nArrows?: number;
   // Reconstruction
   reconError?: number[];
+  // Palette
+  palette?: PaletteName;
 }
 
 const NOISE_COLOR: [number, number, number] = [0.55, 0.55, 0.55];
 const DIM_COLOR: [number, number, number] = [0.12, 0.12, 0.15];
 const GOLDEN_ANGLE = 137.508;
 
+// Okabe-Ito colorblind-safe palette (normalized 0–1)
+const OKABE_ITO: [number, number, number][] = [
+  [0.902, 0.624, 0.000],   // orange
+  [0.337, 0.706, 0.914],   // sky blue
+  [0.000, 0.620, 0.451],   // bluish green
+  [0.941, 0.894, 0.259],   // yellow
+  [0.000, 0.447, 0.698],   // blue
+  [0.835, 0.369, 0.000],   // vermillion
+  [0.800, 0.475, 0.655],   // reddish purple
+];
+
+// Tableau 10 palette (normalized 0–1)
+const TABLEAU10: [number, number, number][] = [
+  [0.306, 0.475, 0.655],   // blue
+  [0.949, 0.557, 0.169],   // orange
+  [0.882, 0.341, 0.349],   // red
+  [0.463, 0.718, 0.698],   // cyan
+  [0.349, 0.631, 0.310],   // green
+  [0.929, 0.788, 0.282],   // yellow
+  [0.690, 0.478, 0.631],   // purple
+  [1.000, 0.616, 0.655],   // pink
+  [0.612, 0.459, 0.373],   // brown
+  [0.729, 0.690, 0.675],   // gray
+];
+
 export function buildClusterPalette(
   clusters: ClusterData[],
+  paletteName: PaletteName = 'golden',
 ): Map<number, [number, number, number]> {
   const palette = new Map<number, [number, number, number]>();
-  clusters.forEach((c, i) => {
-    const hue = (i * GOLDEN_ANGLE) % 360;
-    const [r, g, b] = hslToRgb(hue / 360, 0.8, 0.65);
-    palette.set(c.id, [r, g, b]);
-  });
+
+  if (paletteName === 'okabe') {
+    clusters.forEach((c, i) => {
+      const rgb = OKABE_ITO[i % OKABE_ITO.length]!;
+      palette.set(c.id, rgb);
+    });
+  } else if (paletteName === 'tableau') {
+    clusters.forEach((c, i) => {
+      const rgb = TABLEAU10[i % TABLEAU10.length]!;
+      palette.set(c.id, rgb);
+    });
+  } else {
+    clusters.forEach((c, i) => {
+      const hue = (i * GOLDEN_ANGLE) % 360;
+      const [r, g, b] = hslToRgb(hue / 360, 0.8, 0.65);
+      palette.set(c.id, [r, g, b]);
+    });
+  }
+
   palette.set(-1, NOISE_COLOR);
   return palette;
 }
@@ -41,6 +85,14 @@ function viridis(t: number): [number, number, number] {
   return [r, g, b];
 }
 
+/** Blue-orange colorblind-safe gradient. */
+function blueOrange(t: number): [number, number, number] {
+  const r = 0.05 + 0.90 * t;
+  const g = 0.25 + 0.20 * t;
+  const b = 0.65 - 0.60 * t;
+  return [Math.max(0, Math.min(1, r)), Math.max(0, Math.min(1, g)), Math.max(0, Math.min(1, b))];
+}
+
 export function computeColors(
   dataset: AFEDataset,
   mode: ColorMode,
@@ -48,7 +100,7 @@ export function computeColors(
 ): Float32Array {
   const n = dataset.n_points;
   const colors = new Float32Array(n * 3);
-  const palette = params.clusterPalette ?? buildClusterPalette(dataset.clusters);
+  const palette = params.clusterPalette ?? buildClusterPalette(dataset.clusters, params.palette);
 
   if (mode === 'cluster') {
     for (let i = 0; i < n; i++) {
@@ -161,7 +213,7 @@ export function computeColors(
       }
     }
   } else if (mode === 'recon_error') {
-    // Green (low error) → Red (high error)
+    // Blue (low error) → Orange (high error) — colorblind-safe
     const errors = params.reconError;
     if (errors && errors.length === n) {
       let maxErr = 0;
@@ -172,10 +224,10 @@ export function computeColors(
 
       for (let i = 0; i < n; i++) {
         const t = Math.min(errors[i]! / scale, 1.0);
-        // Green → Yellow → Red
-        colors[i * 3] = t;                            // R: 0→1
-        colors[i * 3 + 1] = 1.0 - t * 0.8;           // G: 1→0.2
-        colors[i * 3 + 2] = 0.1;                      // B: constant low
+        const [cr, cg, cb] = blueOrange(t);
+        colors[i * 3] = cr;
+        colors[i * 3 + 1] = cg;
+        colors[i * 3 + 2] = cb;
       }
     } else {
       for (let i = 0; i < n; i++) {

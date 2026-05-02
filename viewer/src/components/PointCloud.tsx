@@ -78,19 +78,21 @@ export function PointCloud() {
   const pointsRef = useRef<THREE.Points>(null);
   const dataset = useViewerStore((s) => s.dataset);
   const colorMode = useViewerStore((s) => s.colorMode);
+  const paletteName = useViewerStore((s) => s.palette);
   const highlightedIndices = useViewerStore((s) => s.highlightedIndices);
   const neighborIndices = useViewerStore((s) => s.neighborIndices);
   const neighborCenter = useViewerStore((s) => s.neighborCenter);
   const activeArrowIndex = useViewerStore((s) => s.activeArrowIndex);
   const pulseIndex = useViewerStore((s) => s.pulseIndex);
+  const pointSizeMultiplier = useViewerStore((s) => s.pointSizeMultiplier);
   const { gl } = useThree();
   const pulseTime = useRef(0);
   const pointerDownPos = useRef<{ x: number; y: number } | null>(null);
 
   const palette = useMemo(() => {
     if (!dataset) return new Map<number, [number, number, number]>();
-    return buildClusterPalette(dataset.clusters);
-  }, [dataset]);
+    return buildClusterPalette(dataset.clusters, paletteName);
+  }, [dataset, paletteName]);
 
   const pointSize = useMemo(() => {
     if (!dataset) return 10;
@@ -181,6 +183,7 @@ export function PointCloud() {
 
     const colors = computeColors(dataset, colorMode, {
       clusterPalette: palette,
+      palette: paletteName,
       highlightedIndices: highlightedIndices.size > 0 ? highlightedIndices : undefined,
       neighborIndices,
       neighborCenter,
@@ -205,7 +208,7 @@ export function PointCloud() {
       scales.fill(1.0);
     }
     scaleAttr.needsUpdate = true;
-  }, [geometry, dataset, palette, colorMode, highlightedIndices, neighborIndices, neighborCenter, activeArrowIndex]);
+  }, [geometry, dataset, palette, paletteName, colorMode, highlightedIndices, neighborIndices, neighborCenter, activeArrowIndex]);
 
   // Pulse animation
   useEffect(() => {
@@ -248,8 +251,8 @@ export function PointCloud() {
   );
 
   useEffect(() => {
-    uniforms.pointSize.value = pointSize;
-  }, [pointSize, uniforms]);
+    uniforms.pointSize.value = pointSize * pointSizeMultiplier;
+  }, [pointSize, pointSizeMultiplier, uniforms]);
 
   if (!dataset || !geometry) return null;
 
@@ -265,7 +268,7 @@ export function PointCloud() {
         uniforms={uniforms}
         fog
         transparent
-        depthWrite={true}
+        depthWrite={false}
       />
     </points>
   );

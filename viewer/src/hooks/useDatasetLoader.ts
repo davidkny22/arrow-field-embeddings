@@ -1,16 +1,44 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import pako from 'pako';
 import type { AFEDataset } from '../types/dataset';
 import { useViewerStore } from '../store/useViewerStore';
 
-async function loadDataset(url: string): Promise<AFEDataset> {
-  const response = await fetch(url);
+async function loadDataset(url: string, signal: AbortSignal, onProgress: (pct: number) => void): Promise<AFEDataset> {
+  const response = await fetch(url, { signal });
   if (!response.ok) {
     throw new Error(`Failed to load dataset: ${response.status} ${response.statusText}`);
   }
 
-  const buffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
+  const contentLength = Number(response.headers.get('Content-Length') || '0');
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('ReadableStream not supported');
+  }
+
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (signal.aborted) {
+      reader.cancel();
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    chunks.push(value);
+    received += value.length;
+    if (contentLength > 0) {
+      onProgress(Math.min(100, Math.round((received / contentLength) * 100)));
+    }
+  }
+
+  // Concatenate chunks
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
 
   // Detect gzip magic bytes (0x1f 0x8b)
   const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
@@ -50,25 +78,36 @@ async function loadDataset(url: string): Promise<AFEDataset> {
 export function useDatasetLoader(url: string) {
   const setDataset = useViewerStore((s) => s.setDataset);
   const setLoading = useViewerStore((s) => s.setLoading);
+  const setLoadingProgress = useViewerStore((s) => s.setLoadingProgress);
   const setError = useViewerStore((s) => s.setError);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!url) return;
-    let cancelled = false;
+
+    // Abort any previous fetch
+    if (abortRef.current) {
+      abortRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     setLoading(true);
-    loadDataset(url)
+    setLoadingProgress(0);
+    loadDataset(url, controller.signal, setLoadingProgress)
       .then((dataset) => {
-        if (!cancelled) setDataset(dataset);
+        if (!controller.signal.aborted) {
+          setLoadingProgress(100);
+          setDataset(dataset);
+        }
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Unknown error loading dataset');
-        }
+        if (controller.signal.aborted) return;
+        setError(err instanceof Error ? err.message : 'Unknown error loading dataset');
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [url, setDataset, setLoading, setError]);
+  }, [url, setDataset, setLoading, setLoadingProgress, setError]);
 }

@@ -21,18 +21,23 @@ const _quaternion = new THREE.Quaternion();
 const _scale = new THREE.Vector3();
 
 /**
- * Compute auto-scale so the median arrow is ~3% of the cloud diameter.
+ * Compute RMS-based magnitude normalization and auto-scale.
  *
- * Arrow magnitudes are already normalized [0,1] by AFE. This converts them
- * to world-space lengths proportional to the point cloud's visual size.
+ * RMS normalization compresses the dynamic range so that both the smallest
+ * and largest arrows are visually reasonable. The RMS (root-mean-square)
+ * becomes the "typical" arrow magnitude, and the auto-scale maps that
+ * to a fraction of the cloud diameter.
+ *
+ * Returns { autoScale, rms } — multiply raw magnitude by (autoScale / rms)
+ * to get world-space arrow length.
  */
 function computeAutoScale(
   positions: number[],
   arrows: number[],
   nPoints: number,
   nArrows: number,
-): number {
-  if (nPoints < 2 || nArrows === 0) return 1;
+): { autoScale: number; rms: number } {
+  if (nPoints < 2 || nArrows === 0) return { autoScale: 1, rms: 1 };
 
   // Cloud diameter: bounding box diagonal
   let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -47,25 +52,31 @@ function computeAutoScale(
   }
   const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
   const diameter = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (diameter < 1e-10) return 1;
+  if (diameter < 1e-10) return { autoScale: 1, rms: 1 };
 
-  // Median non-zero arrow magnitude (sampled)
+  // RMS of non-zero arrow magnitudes (sampled for performance)
   const step = Math.max(1, Math.floor(nPoints / 2000));
-  const magnitudes: number[] = [];
+  let sumSq = 0;
+  let count = 0;
   for (let i = 0; i < nPoints; i += step) {
     for (let j = 0; j < nArrows; j++) {
-      const r = Math.abs(arrows[i * nArrows * 3 + j * 3 + 2]!);
-      if (r > 1e-8) magnitudes.push(r);
+      const r = arrows[i * nArrows * 3 + j * 3 + 2]!;
+      if (Math.abs(r) > 1e-8) {
+        sumSq += r * r;
+        count++;
+      }
     }
   }
-  if (magnitudes.length === 0) return 1;
-  magnitudes.sort((a, b) => a - b);
-  const median = magnitudes[Math.floor(magnitudes.length / 2)]!;
-  if (median < 1e-10) return 1;
+  if (count === 0) return { autoScale: 1, rms: 1 };
+  const rms = Math.sqrt(sumSq / count);
+  if (rms < 1e-10) return { autoScale: 1, rms: 1 };
 
-  // Scale so the median arrow is TARGET_FRACTION of the cloud diameter
-  const TARGET_FRACTION = 0.02;
-  return (diameter * TARGET_FRACTION) / median;
+  // Scale so the RMS-normalized arrow (magnitude=1 after normalization)
+  // is TARGET_FRACTION of the cloud diameter
+  const TARGET_FRACTION = 0.025;
+  const autoScale = diameter * TARGET_FRACTION;
+
+  return { autoScale, rms };
 }
 
 /**
@@ -122,18 +133,17 @@ export function ArrowField() {
   const arrowScale = useViewerStore((s) => s.arrowScale);
   const arrowDensity = useViewerStore((s) => s.arrowDensity);
   const arrowsVisible = useViewerStore((s) => s.arrowsVisible);
-  const spaceScale = useViewerStore((s) => s.spaceScale);
-  const autoSpaceScale = useViewerStore((s) => s.autoSpaceScale);
-  const totalScale = autoSpaceScale * spaceScale;
+  const arrowMinMagnitude = useViewerStore((s) => s.arrowMinMagnitude);
+  // ArrowField is inside the scaled group in SceneCanvas — no manual scaling needed
 
   const meshRefs = useRef<(THREE.InstancedMesh | null)[]>([]);
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   // Maps instanceId → point index for each arrow mesh (for click handling)
   const instanceToPointRef = useRef<number[][]>([]);
 
-  // Compute auto-scale once per dataset
-  const autoScale = useMemo(() => {
-    if (!dataset) return 1;
+  // Compute auto-scale once per dataset (normalized by RMS so typical arrow = TARGET_FRACTION of diameter)
+  const { autoScale: arrowAutoScale, rms: arrowRms } = useMemo(() => {
+    if (!dataset) return { autoScale: 1, rms: 1 };
     return computeAutoScale(
       dataset.positions,
       dataset.arrows,
@@ -170,15 +180,15 @@ export function ArrowField() {
 
     const n = dataset.n_points;
     const k = dataset.n_arrows;
-    const scale = autoScale * arrowScale;
+    // Normalize by RMS so a typical-magnitude arrow = TARGET_FRACTION of cloud diameter
+    const baseScale = (arrowAutoScale / Math.max(arrowRms, 1e-10)) * arrowScale;
     const density = Math.max(1, Math.round(arrowDensity));
 
     // Rebuild instance-to-point mapping
     instanceToPointRef.current = Array.from({ length: k }, () => []);
 
-    // Minimum visible size: 15% of the median-scaled arrow
-    // (autoScale already normalizes so median ≈ TARGET_FRACTION of diameter)
-    const minMag = autoScale * arrowScale * 0.15;
+    // Minimum visible size: 15% of the typical arrow
+    const minMag = baseScale * 0.15;
 
     for (let arrowIdx = 0; arrowIdx < k; arrowIdx++) {
       const mesh = meshRefs.current[arrowIdx];
@@ -203,17 +213,23 @@ export function ArrowField() {
         }
 
         // Clamp to minimum visible size
-        const mag = Math.max(Math.abs(r) * scale, minMag);
+        const mag = Math.max(Math.abs(r) * baseScale, minMag);
+        if (mag / baseScale < arrowMinMagnitude) {
+          _matrix.makeScale(0, 0, 0);
+          mesh.setMatrixAt(instanceCount, _matrix);
+          instanceCount++;
+          continue;
+        }
 
         // Arrow direction in Three.js Y-up coordinates
         const [dx, dy, dz] = sphericalToThreeJS(theta, phi, 1);
         directionQuaternion(dx, dy, dz, _quaternion);
 
-        // Position at point location (scaled to match point cloud group)
+        // Position at point location (parent group in SceneCanvas handles scaling)
         _position.set(
-          dataset.positions[i * 3]! * totalScale,
-          dataset.positions[i * 3 + 1]! * totalScale,
-          dataset.positions[i * 3 + 2]! * totalScale,
+          dataset.positions[i * 3]!,
+          dataset.positions[i * 3 + 1]!,
+          dataset.positions[i * 3 + 2]!,
         );
 
         _scale.set(mag, mag, mag);
@@ -228,7 +244,7 @@ export function ArrowField() {
       mesh.computeBoundingSphere();
       instanceToPointRef.current[arrowIdx] = pointMap;
     }
-  }, [dataset, autoScale, arrowScale, arrowDensity, totalScale]);
+  }, [dataset, arrowAutoScale, arrowRms, arrowScale, arrowDensity, arrowMinMagnitude]);
 
   // Update visibility when active arrow or visibility changes
   useEffect(() => {

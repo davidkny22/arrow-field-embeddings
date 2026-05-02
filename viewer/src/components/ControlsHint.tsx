@@ -10,7 +10,7 @@ const FLY_HINTS = [
   ['Shift + drag', 'Rectangle select'],
   ['Click point', 'Select & inspect'],
   ['← / →', 'Cycle arrows'],
-  ['A', 'Show all arrows'],
+  ['Q', 'Show all arrows'],
   ['H', 'Toggle arrows'],
 ];
 
@@ -22,7 +22,7 @@ const ORBIT_HINTS = [
   ['Shift + drag', 'Rectangle select'],
   ['Click point', 'Select & inspect'],
   ['← / →', 'Cycle arrows'],
-  ['A', 'Show all arrows'],
+  ['Q', 'Show all arrows'],
   ['H', 'Toggle arrows'],
 ];
 
@@ -32,6 +32,7 @@ export function ControlsHint() {
   const [visible, setVisible] = useState(false);
   const [fading, setFading] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevModeRef = useRef(controlMode);
 
   // Show on first dataset load
@@ -61,7 +62,7 @@ export function ControlsHint() {
     if (!visible) return;
     const dismiss = () => {
       setFading(true);
-      setTimeout(() => setVisible(false), 500);
+      dismissTimeoutRef.current = setTimeout(() => setVisible(false), 500);
     };
     // Delay listener attachment so the mode-switch click doesn't immediately dismiss
     const attachTimeout = setTimeout(() => {
@@ -71,6 +72,7 @@ export function ControlsHint() {
     }, 300);
     return () => {
       clearTimeout(attachTimeout);
+      if (dismissTimeoutRef.current) clearTimeout(dismissTimeoutRef.current);
       window.removeEventListener('pointerdown', dismiss);
       window.removeEventListener('keydown', dismiss);
       window.removeEventListener('wheel', dismiss);

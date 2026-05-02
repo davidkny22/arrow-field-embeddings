@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useViewerStore } from '../store/useViewerStore';
 
 export function InfoPanel() {
@@ -20,22 +20,28 @@ export function InfoPanel() {
   const label = dataset.label_names[dataset.label_indices[selectedIndex]!] ?? 'Unknown';
 
   const clusterIdx = dataset.label_indices[selectedIndex]!;
-  const cluster = dataset.clusters.find((c) => c.id === clusterIdx);
+  const cluster = useMemo(
+    () => dataset.clusters.find((c) => c.id === clusterIdx),
+    [dataset.clusters, clusterIdx],
+  );
 
   const px = dataset.positions[selectedIndex * 3]!;
   const py = dataset.positions[selectedIndex * 3 + 1]!;
   const pz = dataset.positions[selectedIndex * 3 + 2]!;
 
   // Gather arrow values: n_arrows arrows, each with (theta, phi, r)
-  const arrows: { theta: number; phi: number; r: number }[] = [];
-  for (let j = 0; j < dataset.n_arrows; j++) {
-    const base = selectedIndex * dataset.n_arrows * 3 + j * 3;
-    arrows.push({
-      theta: dataset.arrows[base]!,
-      phi: dataset.arrows[base + 1]!,
-      r: dataset.arrows[base + 2]!,
-    });
-  }
+  const arrows = useMemo(() => {
+    const arr: { theta: number; phi: number; r: number }[] = [];
+    for (let j = 0; j < dataset.n_arrows; j++) {
+      const base = selectedIndex * dataset.n_arrows * 3 + j * 3;
+      arr.push({
+        theta: dataset.arrows[base]!,
+        phi: dataset.arrows[base + 1]!,
+        r: dataset.arrows[base + 2]!,
+      });
+    }
+    return arr;
+  }, [dataset, selectedIndex]);
 
   const reconError = dataset.recon_error?.[selectedIndex];
 

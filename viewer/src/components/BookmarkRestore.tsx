@@ -16,6 +16,10 @@ export function BookmarkRestore() {
   const datasetUrl = useViewerStore((s) => s.datasetUrl);
 
   useEffect(() => {
+    applied.current = false;
+  }, [datasetUrl]);
+
+  useEffect(() => {
     if (applied.current || !dataset) return;
 
     const bookmark = decodeBookmark(window.location.hash);
