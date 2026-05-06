@@ -18,6 +18,12 @@ Usage:
 # Only OPENBLAS needs to be pinned to 1; OMP can use multiple threads safely.
 import os
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("BLIS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("NUMBA_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 
 import argparse
 import json
@@ -69,6 +75,20 @@ from benchmarks.reporting import (
     print_significance_summary,
     list_datasets,
 )
+
+
+# ── Utilities ───────────────────────────────────────────────────────────
+
+def _effective_cpu_count():
+    """Return the number of CPUs available to this process.
+
+    Uses os.sched_getaffinity when available (containers), falling back
+    to os.cpu_count().
+    """
+    try:
+        return len(os.sched_getaffinity(0))
+    except Exception:
+        return os.cpu_count() or 1
 
 
 # ── Benchmark runners ───────────────────────────────────────────────────
@@ -404,6 +424,7 @@ def _dataset_worker(task):
     """
     ds = task["dataset_name"]
     worker_output = task["worker_output"]
+    completed = set(tuple(k) for k in task.get("completed", []))
     try:
         results = compare_on_dataset(
             ds,
@@ -412,10 +433,11 @@ def _dataset_worker(task):
             n_seeds=task["n_seeds"],
             modes=task["modes"],
             output_path=worker_output,
-            completed=task["completed"],
+            completed=completed,
             skip_standalone=task["skip_standalone"],
             save_embeddings=task["save_embeddings"],
             spatial_cache_dir=task["spatial_cache_dir"],
+            backend_params_by_name=task.get("backend_params_by_name", {}),
         )
         return {"dataset": ds, "output": worker_output, "error": None}
     except Exception as e:
@@ -438,6 +460,33 @@ def _merge_worker_outputs(main_output, worker_outputs):
             Path(path).unlink(missing_ok=True)
 
 
+def _wait_for_procs(procs, min_remaining):
+    """Wait until fewer than min_remaining processes are running.
+
+    Returns a list of dataset names that finished during this wait.
+    """
+    import time
+    finished_datasets = []
+    while len(procs) >= min_remaining:
+        finished = []
+        for i, (ds, proc, log_file) in enumerate(procs):
+            ret = proc.poll()
+            if ret is not None:
+                finished.append(i)
+                finished_datasets.append(ds)
+                log_file.close()
+                if ret != 0:
+                    print(f"\n  ERROR in {ds}: subprocess exited {ret}")
+                    print(f"    Log: {log_file.name}")
+                else:
+                    print(f"  [{ds}] completed")
+        for i in reversed(finished):
+            procs.pop(i)
+        if len(procs) >= min_remaining:
+            time.sleep(0.5)
+    return finished_datasets
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -452,6 +501,9 @@ def main():
     parser.add_argument("--backends", type=str,
                         default=",".join(ALL_BACKENDS),
                         help=f"Comma-separated backends (default: all)")
+    parser.add_argument("--backend-params", type=str, default=None,
+                        help="JSON dict of backend-specific kwargs, e.g. "
+                             "'{\"tsne\":{\"n_jobs\":-1},\"umap\":{\"n_neighbors\":15}}'")
     parser.add_argument("--n-arrows", type=str, default="optimal",
                         help="Arrow counts: 'optimal' (d-3, one per residual dim), "
                              "'sweep' (multi-count exploration), or comma-separated (e.g., 5,10,25)")
@@ -472,13 +524,15 @@ def main():
                              "Use -1 for all available CPU cores.")
     parser.add_argument("--list-datasets", action="store_true",
                         help="Print available datasets and exit")
+    parser.add_argument("--precache", action="store_true",
+                        help="Load all datasets sequentially to warm the cache, then exit")
     args = parser.parse_args()
 
     if args.list_datasets:
         list_datasets()
         return
 
-    # Resolve dataset list
+    # Resolve dataset list early for precache
     if args.category:
         if args.category == "all":
             datasets = list(DATASETS.keys())
@@ -489,6 +543,32 @@ def main():
     else:
         datasets = ["swiss_roll", "hierarchical_gaussians"]
 
+    if args.precache:
+        print(f"Pre-caching {len(datasets)} datasets...")
+        for i, ds in enumerate(datasets, 1):
+            if ds not in DATASETS:
+                print(f"  [{i}/{len(datasets)}] SKIPPING unknown dataset: {ds}")
+                continue
+            print(f"  [{i}/{len(datasets)}] Loading {ds} ...", end=" ", flush=True)
+            try:
+                loader = DATASETS[ds]
+                X, y = loader()
+                del X, y
+                print("done")
+            except Exception as e:
+                print(f"FAILED: {e}")
+        print("All datasets cached")
+        return
+
+    # Parse backend-specific parameters
+    backend_params_by_name = {}
+    if args.backend_params:
+        try:
+            backend_params_by_name = json.loads(args.backend_params)
+        except json.JSONDecodeError as e:
+            print(f"Error: --backend-params must be valid JSON. {e}")
+            sys.exit(1)
+
     backends = [b.strip() for b in args.backends.split(",")]
     modes = [m.strip() for m in args.modes.split(",")]
     arrow_counts = None  # None = optimal (d-3 per dataset)
@@ -497,13 +577,13 @@ def main():
     elif args.n_arrows not in ("optimal", "auto"):
         arrow_counts = [int(x.strip()) for x in args.n_arrows.split(",")]
 
-    # Sort datasets fastest-first
-    datasets = sort_datasets_by_cost(datasets)
+    # Sort datasets slowest-first to prevent long-tail idle cores
+    datasets = list(reversed(sort_datasets_by_cost(datasets)))
 
     # Resolve n_jobs
     n_jobs = args.n_jobs
     if n_jobs == -1:
-        n_jobs = multiprocessing.cpu_count()
+        n_jobs = _effective_cpu_count()
     n_jobs = max(1, n_jobs)
 
     # Load already-completed runs for resumability
@@ -516,7 +596,8 @@ def main():
     worker_dir.mkdir(parents=True, exist_ok=True)
 
     tasks = []
-    for idx, ds in enumerate(datasets):
+    task_idx = 0
+    for ds in datasets:
         if ds not in DATASETS:
             print(f"Warning: unknown dataset '{ds}', skipping")
             continue
@@ -529,19 +610,22 @@ def main():
         else:
             ds_arrows = arrow_counts
 
-        worker_output = str(worker_dir / f"worker_{idx}_{ds}.jsonl")
-        tasks.append({
-            "dataset_name": ds,
-            "backends": backends,
-            "arrow_counts": ds_arrows,
-            "n_seeds": args.n_seeds,
-            "modes": modes,
-            "worker_output": worker_output,
-            "completed": completed,
-            "skip_standalone": args.skip_standalone,
-            "save_embeddings": args.save_embeddings,
-            "spatial_cache_dir": args.spatial_cache_dir,
-        })
+        for backend_name in backends:
+            worker_output = str(worker_dir / f"worker_{task_idx}_{ds}_{backend_name}.jsonl")
+            tasks.append({
+                "dataset_name": ds,
+                "backends": [backend_name],
+                "arrow_counts": ds_arrows,
+                "n_seeds": args.n_seeds,
+                "modes": modes,
+                "worker_output": worker_output,
+                "completed": [list(k) for k in completed],
+                "skip_standalone": args.skip_standalone,
+                "save_embeddings": args.save_embeddings,
+                "spatial_cache_dir": args.spatial_cache_dir,
+                "backend_params_by_name": backend_params_by_name,
+            })
+            task_idx += 1
 
     if n_jobs == 1:
         print(f"\nRunning benchmark sequentially on {len(tasks)} datasets...")
@@ -552,19 +636,45 @@ def main():
             _merge_worker_outputs(args.output, [res["output"]])
     else:
         print(f"\nRunning benchmark with {n_jobs} parallel workers on {len(tasks)} datasets...")
-        with multiprocessing.Pool(n_jobs) as pool:
-            worker_results = pool.map(_dataset_worker, tasks)
+        # Launch independent subprocesses to avoid joblib's multiprocessing
+        # detection (which forces n_jobs=1 in sklearn backends)
+        import subprocess
+        
+        procs = []
+        for task in tasks:
+            ds = task["dataset_name"]
+            backend_name = task["backends"][0]
+            log_path = worker_dir / f"worker_{ds}_{backend_name}.log"
+            log_file = open(log_path, "w")
+            cmd = [
+                sys.executable, "-c",
+                f"import sys; sys.path.insert(0, '{Path(__file__).parent.parent}'); "
+                f"from benchmarks.compare_methods import _dataset_worker; "
+                f"import json; "
+                f"task = json.loads({json.dumps(json.dumps(task))}); "
+                f"res = _dataset_worker(task); "
+                f"print(json.dumps(res))",
+            ]
+            env = os.environ.copy()
+            env.pop('_MP_FORK_SERVER', None)  # Remove multiprocessing markers
+            proc = subprocess.Popen(
+                cmd, stdout=log_file, stderr=subprocess.STDOUT,
+                text=True, env=env,
+            )
+            procs.append((ds, proc, log_file))
+            if len(procs) >= n_jobs:
+                # Wait for one to finish before starting more
+                _wait_for_procs(procs, n_jobs)
+        
+        # Wait for remaining
+        while len(procs) >= n_jobs:
+            _wait_for_procs(procs, n_jobs)
+        _wait_for_procs(procs, 1)
 
-        errors = [r for r in worker_results if r["error"]]
-        if errors:
-            print(f"\n{'='*70}")
-            print(f"  ERRORS ({len(errors)} datasets failed)")
-            print(f"{'='*70}")
-            for r in errors:
-                print(f"\n  [{r['dataset']}]\n  {r['error']}")
-
-        print(f"\nMerging {len(worker_results)} worker outputs into {args.output}...")
-        _merge_worker_outputs(args.output, [r["output"] for r in worker_results])
+        # Collect results from worker output files
+        worker_outputs = [task["worker_output"] for task in tasks]
+        print(f"\nMerging worker outputs into {args.output}...")
+        _merge_worker_outputs(args.output, worker_outputs)
 
     # Clean up worker temp dir
     if worker_dir.exists():

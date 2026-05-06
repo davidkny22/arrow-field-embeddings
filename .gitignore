@@ -17,3 +17,35 @@ data/*.npy
 data/*.json
 data/*.h5ad
 .DS_Store
+research/
+experiments/
+benchmarks/embeddings/
+benchmarks/spatial_embeddings/
+benchmarks/*.json
+benchmarks/*.jsonl
+benchmarks/ResultsBenchmark*.md
+.benchmarks/
+
+# Deployment, cloud notebooks, and local-only files (kept local)
+run_runpod.sh
+launch_viewer.py
+kaggle_push.py
+notebooks/
+examples/
+provenance/
+docs/plans/
+paper/results_draft.md
+paper/figures/
+paper/ablation_results.jsonl
+paper/competitiveness_gaps.md
+paper/figure_plan.md
+
+# Agent / temporary files
+stuff.txt
+.claude/
+test_server.py
+viewer_demo.html
+
+# Build artifacts
+viewer/dist/
+viewer/public/presets/*.json.gz

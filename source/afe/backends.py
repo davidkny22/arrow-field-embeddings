@@ -184,11 +184,21 @@ class UMAPBackend(SpatialBackend):
                 "Install with: pip install umap-learn"
             )
 
+        # UMAP's random_state forces n_jobs=1, killing parallelism.
+        # If n_jobs > 1 is requested, seed numpy globally instead.
+        umap_kwargs = dict(self.umap_kwargs)
+        use_random_state = True
+        if umap_kwargs.get("n_jobs", None) not in (None, 1):
+            use_random_state = False
+            if self.random_state is not None:
+                import numpy as np
+                np.random.seed(self.random_state)
+
         self._reducer = umap.UMAP(
             n_components=3,
-            random_state=self.random_state,
+            random_state=self.random_state if use_random_state else None,
             verbose=self.verbose,
-            **self.umap_kwargs,
+            **umap_kwargs,
         )
         return self._reducer.fit_transform(X).astype(np.float32)
 
@@ -237,6 +247,14 @@ class TriMAPBackend(SpatialBackend):
     """TriMAP-based spatial layout.
 
     Requires: pip install trimap
+
+    Note
+    ----
+    The ``trimap`` package (all versions through 1.1.5) does **not** expose a
+    ``random_state`` parameter (see `eamid/trimap#11
+    <https://github.com/eamid/trimap/issues/11>`_).  Consequently, TriMAP
+    embeddings are not seed-reproducible.  Any ``random_state`` passed to this
+    backend is stored for API consistency but is silently ignored.
     """
 
     def __init__(self, random_state=None, verbose=False, **kwargs):
@@ -254,10 +272,16 @@ class TriMAPBackend(SpatialBackend):
                 "Install with: pip install trimap"
             )
 
-        # Pass random_state directly to TRIMAP instead of mutating global state
+        # TRIMAP does not accept random_state in any released version
+        # (open issue eamid/trimap#11 since 2020).  The only available
+        # reproducibility mechanism is to seed the global NumPy RNG.
+        # This is imperfect (numba JIT and AnnoyIndex threading can
+        # still introduce non-determinism) but it is the only option.
         trimap_kwargs = dict(self.trimap_kwargs)
-        if self.random_state is not None and "random_state" not in trimap_kwargs:
-            trimap_kwargs["random_state"] = self.random_state
+
+        if self.random_state is not None:
+            import numpy as np
+            np.random.seed(self.random_state)
 
         self._reducer = trimap.TRIMAP(
             n_dims=3,
@@ -265,7 +289,6 @@ class TriMAPBackend(SpatialBackend):
             **trimap_kwargs,
         )
         result = self._reducer.fit_transform(X).astype(np.float32)
-
         return result
 
     def transform(self, X_new: np.ndarray) -> np.ndarray:
